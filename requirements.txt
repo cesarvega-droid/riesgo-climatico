@@ -1,0 +1,9 @@
+streamlit
+geopandas
+shapely
+plotly
+requests
+pandas
+numpy
+fpdf2
+scipy
