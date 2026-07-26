@@ -173,6 +173,14 @@ UMBRAL_PROBABILIDAD_CRITICA = 55.0  # % de miembros sobre el percentil 80
 PERCENTIL_EXTREMO = 80              # Definición operativa de "lluvia extrema"
 RADIO_BUFFER_KM = 10.0              # Zona de operación local alrededor de la planta
 
+# Umbral intermedio (didáctico) para clasificar la amenaza mensual en la Pestaña 2.
+UMBRAL_PROBABILIDAD_VIGILANCIA = 40.0  # % — entre este valor y el crítico = vigilancia
+
+# --- Identidad / autoría de la plataforma ---
+EMPRESA = "Unleashing Power | Lima - Perú"
+AUTOR_CONTACTO = "cesar.vega@unleashing-power.com"
+VERSION_ESTADO = "Versión BETA — herramienta en desarrollo"
+
 # Contexto oficial hardcodeado según especificación del proyecto.
 # NOTA DE MANTENIMIENTO: actualizar este bloque con cada nuevo comunicado ENFEN.
 TEXTO_ENFEN = (
@@ -1042,6 +1050,8 @@ def generar_pdf(contexto: dict) -> bytes:
         ("Radio de operación analizado", f"{RADIO_BUFFER_KM:.0f} km"),
         ("Fecha de emisión del reporte", datetime.now().strftime("%d/%m/%Y %H:%M")),
         ("Modo de datos", contexto["modo_datos"]),
+        ("Emitido por", EMPRESA),
+        ("Contacto del autor", AUTOR_CONTACTO),
     ]
     for etiqueta, valor in filas:
         pdf.set_font("Helvetica", "B", 10)
@@ -1100,7 +1110,7 @@ def generar_pdf(contexto: dict) -> bytes:
         pdf.cell(anchos[1], 6.5, f"{fila_mes['normal']:.1f}", border=1, align="C", fill=True)
         pdf.cell(anchos[2], 6.5, f"{fila_mes['p80']:.1f}", border=1, align="C", fill=True)
         prob_mes = fila_mes["prob"]
-        if prob_mes is None:
+        if prob_mes is None or pd.isna(prob_mes):
             pdf.set_text_color(120, 120, 120)
             texto_prob = "fuera de horizonte"
         else:
@@ -1121,6 +1131,24 @@ def generar_pdf(contexto: dict) -> bytes:
         f"supera el percentil {PERCENTIL_EXTREMO} del clima ERA5 1991-2020 en el punto del activo."
     ))
     pdf.ln(2)
+
+    # --- Lectura mes a mes (misma narrativa que la app) ---
+    pdf.set_font("Helvetica", "B", 10)
+    pdf.set_text_color(20, 20, 20)
+    pdf.cell(0, 6, _latin1("Lectura mes a mes de la temporada:"), new_x="LMARGIN", new_y="NEXT")
+    pdf.set_font("Helvetica", "", 9)
+    for color, texto in narrar_temporada_pdf(contexto.get("temporada", [])):
+        pdf.set_text_color(*color)
+        pdf.multi_cell(0, 5, new_x="LMARGIN", new_y="NEXT", text=_latin1("- " + texto))
+    pdf.set_text_color(90, 90, 90)
+    pdf.set_font("Helvetica", "I", 8)
+    pdf.multi_cell(0, 4.5, new_x="LMARGIN", new_y="NEXT", text=_latin1(
+        f"Semáforo: CRÍTICA (>= {UMBRAL_PROBABILIDAD_CRITICA:.0f}%)  |  VIGILANCIA "
+        f"({UMBRAL_PROBABILIDAD_VIGILANCIA:.0f}-{UMBRAL_PROBABILIDAD_CRITICA:.0f}%)  |  "
+        f"BAJA (< {UMBRAL_PROBABILIDAD_VIGILANCIA:.0f}%)."
+    ))
+    pdf.set_text_color(20, 20, 20)
+    pdf.ln(3)
 
     # --- Riesgos operativos ---
     pdf.set_font("Helvetica", "B", 11)
@@ -1164,9 +1192,141 @@ def generar_pdf(contexto: dict) -> bytes:
         "a escala local; deben interpretarse como orientación de anomalía de área (36 km) y "
         "complementarse con monitoreo oficial de SENAMHI/ENFEN antes de decisiones operativas."
     ))
+    pdf.ln(2)
+    pdf.multi_cell(0, 4.5, new_x="LMARGIN", new_y="NEXT", text= _latin1(
+        f"{EMPRESA}  |  Autor: {AUTOR_CONTACTO}  |  {VERSION_ESTADO}."
+    ))
 
     salida = pdf.output()  # fpdf2 >= 2.5 devuelve bytearray
     return bytes(salida)
+
+
+# =============================================================================
+# 6.b NARRATIVA MES A MES (lectura didáctica del gráfico de la Pestaña 2)
+# =============================================================================
+
+def clasificar_amenaza_mensual(prob):
+    """Traduce la probabilidad de excedencia de un mes a un nivel didáctico.
+
+    Devuelve (icono, etiqueta, color) para uso en la explicación textual.
+    """
+    if prob is None or pd.isna(prob):
+        return ("⚪", "sin dato", COLOR_TEXTO)
+    if prob >= UMBRAL_PROBABILIDAD_CRITICA:
+        return ("🔴", "crítico", COLOR_ALERTA)
+    if prob >= UMBRAL_PROBABILIDAD_VIGILANCIA:
+        return ("🟠", "vigilancia", COLOR_ADVERTENCIA)
+    return ("🟢", "bajo", COLOR_OK)
+
+
+def narrar_temporada(df_temp):
+    """Construye, mes a mes, una explicación en lenguaje claro del gráfico de amenaza.
+
+    Lee los valores reales de `df_temporada` (probabilidad, normal y umbral P80 de cada
+    mes) y devuelve una lista de líneas listas para renderizar con st.markdown. La idea
+    es que un lector no técnico entienda, mes por mes, qué está diciendo la curva.
+    """
+    lineas = []
+    for fila in df_temp.itertuples(index=False):
+        icono, _, _ = clasificar_amenaza_mensual(fila.prob)
+        normal_txt = f"{fila.normal:.1f} mm" if pd.notna(fila.normal) else "s/d"
+        p80_txt = f"{fila.p80:.1f} mm" if pd.notna(fila.p80) else "s/d"
+        sin_dato = fila.prob is None or pd.isna(fila.prob)
+
+        if sin_dato:
+            lineas.append(
+                f"{icono} **{fila.mes} — sin dato aún.** El mes todavía no entra en el "
+                f"horizonte de pronóstico de SEAS5 (~7 meses); por ahora solo se muestra la "
+                f"climatología de referencia (normal {normal_txt}, umbral extremo {p80_txt}). "
+                "El valor probabilístico se habilitará conforme avance el calendario."
+            )
+            continue
+
+        prob = float(fila.prob)
+        if prob >= UMBRAL_PROBABILIDAD_CRITICA:
+            veredicto = (
+                f"**{prob:.0f}% de los 51 escenarios** del modelo prevén un mes más lluvioso "
+                f"de lo normal, por encima del umbral crítico del "
+                f"{UMBRAL_PROBABILIDAD_CRITICA:.0f}%. **Amenaza CRÍTICA:** es el tipo de mes "
+                "capaz de gatillar inundaciones, huaicos o colmatación sobre el activo."
+            )
+        elif prob >= UMBRAL_PROBABILIDAD_VIGILANCIA:
+            veredicto = (
+                f"**{prob:.0f}% de los escenarios** apuntan a lluvia por encima de lo normal. "
+                f"Todavía por debajo del umbral crítico ({UMBRAL_PROBABILIDAD_CRITICA:.0f}%), "
+                "pero es un mes de **VIGILANCIA:** conviene seguir de cerca los comunicados de ENFEN."
+            )
+        else:
+            veredicto = (
+                f"Solo **{prob:.0f}% de los escenarios** superan el umbral de lluvia extrema. "
+                "**Amenaza BAJA:** la mayor parte del ensamble se mantiene dentro de lo normal."
+            )
+        lineas.append(
+            f"{icono} **{fila.mes} — {prob:.0f}%.** {veredicto} "
+            f"_(normal {normal_txt}; umbral extremo P{PERCENTIL_EXTREMO} {p80_txt})_"
+        )
+    return lineas
+
+
+def _nivel_amenaza_pdf(prob):
+    """Nivel + color RGB para la narrativa mensual del PDF (sin emoji, Latin-1)."""
+    if prob is None or pd.isna(prob):
+        return ("SIN DATO", (120, 120, 120))
+    if prob >= UMBRAL_PROBABILIDAD_CRITICA:
+        return ("CRÍTICA", (200, 60, 30))
+    if prob >= UMBRAL_PROBABILIDAD_VIGILANCIA:
+        return ("VIGILANCIA", (180, 130, 20))
+    return ("BAJA", (30, 130, 95))
+
+
+def narrar_temporada_pdf(temporada):
+    """Versión Latin-1 (sin markdown ni emoji) de la narrativa mes a mes para el PDF.
+
+    Recibe la lista de dicts de contexto['temporada'] y devuelve tuplas
+    (color_rgb, texto_plano) listas para renderizar con multi_cell. Es el equivalente
+    impreso de narrar_temporada(), para que el reporte diga lo mismo que la pantalla.
+    """
+    bloques = []
+    for fila in temporada:
+        prob = fila.get("prob")
+        normal = fila.get("normal")
+        p80 = fila.get("p80")
+        nivel, color = _nivel_amenaza_pdf(prob)
+        normal_txt = f"{normal:.1f} mm" if (normal is not None and not pd.isna(normal)) else "s/d"
+        p80_txt = f"{p80:.1f} mm" if (p80 is not None and not pd.isna(p80)) else "s/d"
+
+        if nivel == "SIN DATO":
+            texto = (
+                f"{fila['mes']}: sin dato aún. El mes todavía no entra en el horizonte de "
+                f"pronóstico de SEAS5 (~7 meses); por ahora solo se muestra la climatología de "
+                f"referencia (normal {normal_txt}, umbral extremo {p80_txt})."
+            )
+        else:
+            p = float(prob)
+            if nivel == "CRÍTICA":
+                cuerpo = (
+                    f"{p:.0f}% de los 51 escenarios prevén un mes más lluvioso de lo normal, "
+                    f"por encima del umbral crítico del {UMBRAL_PROBABILIDAD_CRITICA:.0f}%. "
+                    "Amenaza CRÍTICA: mes capaz de gatillar inundaciones, huaicos o colmatación "
+                    "sobre el activo."
+                )
+            elif nivel == "VIGILANCIA":
+                cuerpo = (
+                    f"{p:.0f}% de los escenarios apuntan a lluvia por encima de lo normal, aún "
+                    f"por debajo del umbral crítico ({UMBRAL_PROBABILIDAD_CRITICA:.0f}%). Mes de "
+                    "VIGILANCIA: conviene seguir de cerca los comunicados de ENFEN."
+                )
+            else:
+                cuerpo = (
+                    f"solo {p:.0f}% de los escenarios superan el umbral de lluvia extrema. "
+                    "Amenaza BAJA: la mayor parte del ensamble se mantiene dentro de lo normal."
+                )
+            texto = (
+                f"{fila['mes']} ({p:.0f}%): {cuerpo} "
+                f"(normal {normal_txt}; umbral extremo P{PERCENTIL_EXTREMO} {p80_txt})."
+            )
+        bloques.append((color, texto))
+    return bloques
 
 
 # =============================================================================
@@ -1211,6 +1371,9 @@ st.title("🌊 Plataforma de Riesgo Climático — El Niño 2026-2027")
 st.caption(
     "Amenaza probabilística de lluvias extremas para infraestructura crítica en el Perú | "
     "ECMWF SEAS5 (51 miembros) · ERA5 · geoBoundaries · IPCC AR6"
+)
+st.caption(
+    f"Desarrollado por **{EMPRESA}**  ·  Autor: {AUTOR_CONTACTO}  ·  _{VERSION_ESTADO}_"
 )
 
 # ---- Geoespacial ----
@@ -1464,11 +1627,27 @@ with tab_prob:
         margin=dict(t=95, b=10, l=10, r=10),
     )
     st.plotly_chart(fig_temp, width='stretch')
+
+    # --- Lectura didáctica del gráfico, mes a mes ---
+    st.markdown("#### 📖 Cómo leer este gráfico, mes a mes")
+    st.markdown(
+        f"En una frase: la **línea cian** indica, para cada mes, qué porcentaje de los "
+        f"**51 escenarios** del modelo SEAS5 prevé lluvias por encima de lo normal "
+        f"(el umbral P{PERCENTIL_EXTREMO} del clima 1991–2020 en el punto exacto de la central). "
+        f"Cuanto más alta esté esa línea —y más cerca o por encima de la **línea roja del "
+        f"{UMBRAL_PROBABILIDAD_CRITICA:.0f}%**—, mayor es la amenaza de lluvia extrema. "
+        f"Las **barras** son la lluvia típica del mes y la **línea ámbar** marca a partir de "
+        f"cuánta lluvia se considera \"extrema\"."
+    )
+    for _linea in narrar_temporada(df_temporada):
+        st.markdown(_linea)
     st.caption(
-        "Interpretación: la probabilidad (línea cian, eje derecho) es la fracción de los "
-        "miembros del ensamble SEAS5 cuyo total mensual supera el percentil 80 del clima "
-        "1991-2020 en el punto exacto de la central. Valores sobre la línea punteada roja "
-        "activan la matriz de peligro crítico."
+        f"Semáforo de amenaza: 🔴 crítico (≥ {UMBRAL_PROBABILIDAD_CRITICA:.0f}%) · "
+        f"🟠 vigilancia ({UMBRAL_PROBABILIDAD_VIGILANCIA:.0f}–{UMBRAL_PROBABILIDAD_CRITICA:.0f}%) · "
+        f"🟢 bajo (< {UMBRAL_PROBABILIDAD_VIGILANCIA:.0f}%). "
+        "La probabilidad es la fracción de miembros del ensamble cuyo total mensual supera el "
+        "umbral extremo; se interpreta como anomalía de área (~36 km) y no reemplaza los "
+        "comunicados oficiales de ENFEN/SENAMHI."
     )
 
 # ---------------------------------------------------------------- Pestaña 3
@@ -1605,3 +1784,14 @@ punto-en-polígono con Shapely/GEOS y buffer métrico en proyección UTM local.
         )
     except Exception as e:
         st.error(f"No fue posible generar el PDF en este momento: {e}")
+
+
+# =============================================================================
+# 10. PIE DE PAGINA GLOBAL
+# =============================================================================
+st.divider()
+st.caption(
+    f"© 2026 {EMPRESA}  ·  Autor: {AUTOR_CONTACTO}  ·  **{VERSION_ESTADO}.** "
+    "Los resultados son orientativos y no reemplazan el criterio técnico ni los "
+    "comunicados oficiales de ENFEN/SENAMHI."
+)
