@@ -1,7 +1,7 @@
 streamlit
 geopandas
 shapely
-plotly
+plotly==5.24.1
 requests
 pandas
 numpy
