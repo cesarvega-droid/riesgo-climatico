@@ -18,6 +18,7 @@
 
 import io
 import json
+import os
 import unicodedata
 from datetime import datetime
 
@@ -41,24 +42,95 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# Paleta corporativa sobria: azules marinos profundos que denotan rigor técnico.
-COLOR_FONDO = "#0B1D33"        # Azul marino casi negro (fondo principal)
-COLOR_PANEL = "#12294A"        # Azul panel (tarjetas y sidebar)
-COLOR_ACENTO = "#3FA7D6"       # Azul cian técnico (líneas y métricas)
+# Paleta corporativa UNLEASHING POWER.
+# Criterio de diseño: la identidad viste el CROMO (fondos, paneles, acentos,
+# tipografía); las señales FUNCIONALES (semáforo de riesgo y escala del mapa de
+# calor) conservan su código de color porque comunican estado, no marca. Pintar
+# de púrpura un semáforo lo vuelve bonito e ilegible.
+UP_PURPURA = "#50164A"         # Púrpura corporativo (reservado para impresos)
+UP_LOGO = "#701E63"            # Púrpura del logotipo (tono medio de la rampa)
+UP_MAGENTA = "#84247B"         # Magenta corporativo (acento vivo, bordes)
+UP_ORO = "#C9A227"             # Oro corporativo (realces y reglas finas)
+
+COLOR_FONDO = "#1A0718"        # Ciruela casi negro (fondo principal)
+COLOR_ACENTO = "#DFA0D6"       # Orquídea claro: magenta legible sobre ciruela
+COLOR_TEXTO = "#EFE2EC"        # Blanco rosado (texto general)
+COLOR_TEXTO_TENUE = "#C4A8BF"  # Texto secundario y pies de figura
+
+# --- Señales funcionales: NO son colores de marca, son código de estado ---
 COLOR_ALERTA = "#E4572E"       # Naranja rojizo (peligro crítico)
-COLOR_ADVERTENCIA = "#F5B841"  # Ámbar (peligro moderado)
+COLOR_ADVERTENCIA = "#F5B841"  # Ámbar (vigilancia) — vecino natural del oro UP
 COLOR_OK = "#59C9A5"           # Verde azulado (condición normal)
-COLOR_TEXTO = "#DCE7F5"        # Gris azulado claro (texto)
+
+# Logotipo: variante monocroma blanca sobre fondo transparente, pensada para
+# fondos oscuros. Si el archivo no está en el repositorio, la app no falla:
+# muestra el nombre tipográfico como respaldo.
+RUTA_LOGO = "logo_up_blanco.png"
+
+
+def mostrar_logo(contenedor, ancho=210):
+    """Pinta el logotipo, con respaldo tipográfico si falta el archivo."""
+    try:
+        if os.path.exists(RUTA_LOGO):
+            contenedor.image(RUTA_LOGO, width=ancho)
+            return
+    except Exception:
+        pass
+    contenedor.markdown(
+        "<div class='marca-respaldo'>UNLEASHING<br>POWER</div>",
+        unsafe_allow_html=True,
+    )
+
+
+# --- Tonos para el ÁREA DE TRAZADO de los gráficos --------------------------
+# Criterio: el dato manda. El fondo del gráfico baja casi al nivel del fondo de
+# página (solo lo suficiente para delimitarlo), la rejilla queda apenas
+# insinuada, y el color corporativo se reserva para el MARCO del recuadro. Así
+# la transición de color es tranquila y lo que resalta es la información.
+COLOR_LIENZO = "#210B1F"                  # Ciruela muy bajo (fondo de trazado)
+COLOR_REJILLA = "rgba(223,160,214,0.13)"  # Rejilla apenas perceptible
+COLOR_MARCO = UP_MAGENTA                  # Delineado corporativo del recuadro
+COLOR_BARRA_NORMAL = "#8A3A80"            # Ciruela medio para barras de referencia
+
+
+def estilo_grafico(fig):
+    """
+    Aplica el tratamiento común a todos los gráficos: lienzo bajo, rejilla
+    tenue y marco en color corporativo. Se llama DESPUÉS de update_layout
+    para que prevalezca sobre los ajustes particulares de cada figura.
+    """
+    fig.update_layout(
+        paper_bgcolor=COLOR_FONDO,
+        plot_bgcolor=COLOR_LIENZO,
+        font=dict(color=COLOR_TEXTO),
+    )
+    marco = dict(showline=True, linecolor=COLOR_MARCO, linewidth=1, mirror=True,
+                 gridcolor=COLOR_REJILLA, zeroline=False)
+    fig.update_xaxes(**marco)
+    fig.update_yaxes(**marco)
+    return fig
+
 
 st.markdown(
     f"""
     <style>
       .stApp {{ background-color: {COLOR_FONDO}; color: {COLOR_TEXTO}; }}
-      section[data-testid="stSidebar"] {{ background-color: {COLOR_PANEL}; }}
+      section[data-testid="stSidebar"] {{
+          background-color: {COLOR_FONDO};
+          border-right: 1px solid {UP_MAGENTA};
+      }}
       h1, h2, h3, h4 {{ color: #FFFFFF !important; }}
+      /* Regla fina en oro bajo el título principal: firma visual de la marca. */
+      h1 {{ border-bottom: 2px solid {UP_ORO}; padding-bottom: 10px; }}
       div[data-testid="stMetricValue"] {{ color: {COLOR_ACENTO}; }}
+      .marca-respaldo {{
+          color: #FFFFFF; font-weight: 800; letter-spacing: 0.14em;
+          font-size: 1.05rem; line-height: 1.25; border-left: 5px solid {UP_ORO};
+          padding-left: 12px; margin-bottom: 14px;
+      }}
       .panel-enfen {{
-          background-color: #1B3A5C; border-left: 6px solid {COLOR_ADVERTENCIA};
+          background-color: #2A0E27; border: 1px solid {UP_MAGENTA};
+          border-left: 6px solid {UP_ORO};
           padding: 14px 18px; border-radius: 6px; font-size: 0.92rem;
           line-height: 1.5; margin-bottom: 12px;
       }}
@@ -66,14 +138,14 @@ st.markdown(
           padding: 16px 20px; border-radius: 8px; margin-bottom: 10px;
           font-size: 0.95rem; line-height: 1.55;
       }}
-      .riesgo-critico  {{ background-color: rgba(228, 87, 46, 0.15); border-left: 6px solid {COLOR_ALERTA}; }}
-      .riesgo-alto     {{ background-color: rgba(245, 184, 65, 0.12); border-left: 6px solid {COLOR_ADVERTENCIA}; }}
-      .riesgo-normal   {{ background-color: rgba(89, 201, 165, 0.10); border-left: 6px solid {COLOR_OK}; }}
+      .riesgo-critico  {{ background-color: rgba(228, 87, 46, 0.18); border-left: 6px solid {COLOR_ALERTA}; }}
+      .riesgo-alto     {{ background-color: rgba(245, 184, 65, 0.15); border-left: 6px solid {COLOR_ADVERTENCIA}; }}
+      .riesgo-normal   {{ background-color: rgba(89, 201, 165, 0.12); border-left: 6px solid {COLOR_OK}; }}
 
       /* ---------- CORRECCIÓN DE CONTRASTE (legibilidad sobre fondo oscuro) ----------
          Si la app corre sin el tema oscuro de .streamlit/config.toml, Streamlit usa
-         su tema claro por defecto y las etiquetas quedan gris-oscuro sobre azul
-         marino (ilegibles). Estas reglas fuerzan texto claro en los elementos de
+         su tema claro por defecto y las etiquetas quedan gris-oscuro sobre ciruela
+         (ilegibles). Estas reglas fuerzan texto claro en los elementos de
          interfaz, sin tocar el interior de los inputs (que tienen fondo blanco). */
       section[data-testid="stSidebar"] label p,
       section[data-testid="stSidebar"] div[data-testid="stWidgetLabel"] p,
@@ -82,7 +154,7 @@ st.markdown(
       }}
       div[data-testid="stCaptionContainer"] p,
       div[data-testid="stCaptionContainer"] {{
-          color: #A9BCD4 !important;           /* captions y subtítulos */
+          color: {COLOR_TEXTO_TENUE} !important;   /* captions y subtítulos */
       }}
       /* Etiqueta superior de st.metric (p.ej. "Departamento detectado").
          Streamlit ha cambiado el nodo interno entre versiones, así que se cubren
@@ -93,7 +165,7 @@ st.markdown(
       div[data-testid="stMetricLabel"] div,
       label[data-testid="stMetricLabel"],
       label[data-testid="stMetricLabel"] * {{
-          color: #B7C7DA !important;
+          color: {COLOR_TEXTO_TENUE} !important;
           opacity: 1 !important;
       }}
       div[data-testid="stMetricValue"],
@@ -103,7 +175,12 @@ st.markdown(
       button[data-baseweb="tab"] p {{
           color: {COLOR_TEXTO} !important;     /* títulos de pestañas no activas */
       }}
-      .panel-enfen {{ color: #EAF2FB; }}
+      /* Pestaña activa subrayada en oro corporativo. */
+      button[data-baseweb="tab"][aria-selected="true"] p {{ color: #FFFFFF !important; }}
+      div[data-baseweb="tab-highlight"], div[data-baseweb="tab-border"] {{
+          background-color: {UP_ORO} !important;
+      }}
+      .panel-enfen {{ color: #FBF3F9; }}
       details summary p {{ color: {COLOR_TEXTO} !important; }}  /* expander */
       .stAlert p {{ color: inherit; }}
     </style>
@@ -1395,7 +1472,7 @@ def generar_pdf(contexto: dict) -> bytes:
     pdf.add_page()
 
     # --- Encabezado corporativo ---
-    pdf.set_fill_color(11, 29, 51)
+    pdf.set_fill_color(80, 22, 74)   # UP Púrpura
     pdf.rect(0, 0, 210, 30, "F")
     pdf.set_text_color(255, 255, 255)
     pdf.set_font("Helvetica", "B", 15)
@@ -1465,7 +1542,7 @@ def generar_pdf(contexto: dict) -> bytes:
     encabezados = ("Mes", "Normal ERA5 (mm)",
                    f"Umbral P{PERCENTIL_EXTREMO} (mm)", "Prob. excedencia (%)")
     pdf.set_font("Helvetica", "B", 9)
-    pdf.set_fill_color(18, 41, 74)
+    pdf.set_fill_color(112, 30, 99)  # Púrpura del logotipo
     pdf.set_text_color(255, 255, 255)
     for ancho, encabezado in zip(anchos, encabezados):
         pdf.cell(ancho, 7, _latin1(encabezado), border=1, align="C", fill=True)
@@ -1703,6 +1780,7 @@ def narrar_temporada_pdf(temporada):
 # 7. INTERFAZ — BARRA LATERAL DE ENTRADAS
 # =============================================================================
 
+mostrar_logo(st.sidebar)
 st.sidebar.title("⚙️ Parámetros del Activo")
 st.sidebar.caption("Evaluación probabilística — Temporada ENFEN Oct 2026 – Abr 2027")
 
@@ -1965,7 +2043,8 @@ with tab_geo:
         "Zoom Nacional → Regional → Local. El mapa de calor es una superficie continua "
         "interpolada (los tonos entre los puntos de datos SEAS5 son estimados, no medidos). "
         "El departamento del activo se resalta en ámbar (intersección punto-en-polígono de "
-        "Shapely) y el círculo cian delimita el buffer de 10 km proyectado en UTM."
+        "Shapely) y el círculo delimita el buffer de 10 km proyectado en UTM, coloreado "
+        "según el índice de anomalía del mes en el punto de la planta."
     )
 
 # ---------------------------------------------------------------- Pestaña 2
@@ -1988,7 +2067,7 @@ with tab_prob:
     fig_temp = go.Figure()
     fig_temp.add_trace(go.Bar(
         x=df_temporada["mes"], y=df_temporada["normal"],
-        name="Normal climatológica (mm)", marker_color="#2E5266", opacity=0.8,
+        name="Normal climatológica (mm)", marker_color=COLOR_BARRA_NORMAL, opacity=0.8,
     ))
     fig_temp.add_trace(go.Scatter(
         x=df_temporada["mes"], y=df_temporada["p80"],
@@ -2008,7 +2087,7 @@ with tab_prob:
                        annotation_text=f"Umbral crítico {UMBRAL_PROBABILIDAD_CRITICA:.0f}%",
                        annotation_font_color=COLOR_ALERTA)
     fig_temp.update_layout(
-        template="plotly_dark", paper_bgcolor=COLOR_FONDO, plot_bgcolor=COLOR_PANEL,
+        template="plotly_dark", paper_bgcolor=COLOR_FONDO, plot_bgcolor=COLOR_LIENZO,
         height=470,
         title=dict(
             text="Temporada crítica Oct 2026 – Abr 2027: clima de referencia vs. señal probabilística",
@@ -2022,12 +2101,13 @@ with tab_prob:
                     range=[0, 100], showgrid=False),
         margin=dict(t=95, b=10, l=10, r=10),
     )
+    estilo_grafico(fig_temp)
     st.plotly_chart(fig_temp, width='stretch')
 
     # --- Lectura didáctica del gráfico, mes a mes ---
     st.markdown("#### 📖 Cómo leer este gráfico, mes a mes")
     st.markdown(
-        f"En una frase: la **línea cian** indica, para cada mes, qué porcentaje de los "
+        f"En una frase: la **línea de probabilidad** indica, para cada mes, qué porcentaje de los "
         f"**51 escenarios** del modelo SEAS5 prevé lluvias por encima de lo normal "
         f"(el umbral P{PERCENTIL_EXTREMO} del clima 1991–2020 en el punto exacto de la central). "
         f"Cuanto más alta esté esa línea —y más cerca o por encima de la **línea roja del "
@@ -2109,7 +2189,7 @@ with tab_riesgo:
     )
 
     barras = [
-        ("Normal climatológica", normal_mes, "#2E5266", "referencia"),
+        ("Normal climatológica", normal_mes, COLOR_BARRA_NORMAL, "referencia"),
         (f"Umbral P{PERCENTIL_EXTREMO} histórico", umbral_p80, COLOR_ADVERTENCIA, "referencia"),
         ("Mediana del ensamble", mediana_mes, COLOR_ACENTO, "pronóstico"),
         ("P90 del ensamble", p90_mes, COLOR_ALERTA, "pronóstico"),
@@ -2138,7 +2218,7 @@ with tab_riesgo:
             hovertemplate="%{x}<br>%{y:,.0f} m³<extra></extra>",
         ))
         fig_vol.update_layout(
-            template="plotly_dark", paper_bgcolor=COLOR_FONDO, plot_bgcolor=COLOR_PANEL,
+            template="plotly_dark", paper_bgcolor=COLOR_FONDO, plot_bgcolor=COLOR_LIENZO,
             height=430, showlegend=False,
             title=dict(
                 text=(f"Volumen acumulado mensual sobre {area_aporte:,.0f} m² — "
@@ -2151,6 +2231,7 @@ with tab_riesgo:
         )
         # Holgura superior para que las etiquetas "outside" no se recorten.
         fig_vol.update_yaxes(range=[0, max(volumenes) * 1.28])
+        estilo_grafico(fig_vol)
         st.plotly_chart(fig_vol, width='stretch')
 
         # Lectura cuantificada del salto entre el clima normal y el pronóstico alto.
@@ -2211,8 +2292,8 @@ with tab_ciencia:
         fig_violin.add_trace(go.Violin(
             y=ensamble_mes["total_mm"], box_visible=True, points="all",
             pointpos=0, jitter=0.35, meanline_visible=True,
-            fillcolor="rgba(63,167,214,0.25)", line_color=COLOR_ACENTO,
-            marker=dict(size=5, color="#9FD3EC"),
+            fillcolor="rgba(223,160,214,0.22)", line_color=COLOR_ACENTO,
+            marker=dict(size=5, color="#F0CDEA"),
             name=f"{n_miembros} miembros",
         ))
         fig_violin.add_hline(y=umbral_p80, line_dash="dash", line_color=COLOR_ADVERTENCIA,
@@ -2222,15 +2303,16 @@ with tab_ciencia:
                              annotation_text=f"Normal = {normal_mes:.0f} mm",
                              annotation_font_color=COLOR_OK)
         fig_violin.update_layout(
-            template="plotly_dark", paper_bgcolor=COLOR_FONDO, plot_bgcolor=COLOR_PANEL,
+            template="plotly_dark", paper_bgcolor=COLOR_FONDO, plot_bgcolor=COLOR_LIENZO,
             height=460, yaxis_title="Precipitación mensual total (mm)",
             showlegend=False, margin=dict(t=30),
         )
+        estilo_grafico(fig_violin)
         st.plotly_chart(fig_violin, width='stretch')
         st.markdown(f"""
 **Cómo leer este gráfico (violín de distribución):**
 
-- **Cada punto azul es un miembro del ensamble** — una de las {n_miembros} simulaciones
+- **Cada punto es un miembro del ensamble** — una de las {n_miembros} simulaciones
 que el ECMWF corre partiendo de condiciones atmosféricas iniciales ligeramente distintas.
 Juntos representan los futuros físicamente plausibles para {etiqueta_mes}.
 - **El ancho del violín** en cada altura indica cuántos miembros predicen ese nivel de
