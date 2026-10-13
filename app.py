@@ -11,6 +11,10 @@
 #    - Climatología  : Open-Meteo Archive API  -> Reanálisis ERA5 (1991-2020)
 #    - Reporte       : fpdf2 (PDF autocontenido, sin dependencias gráficas)
 #
+#  Cambios oct-2026: semáforo con P90 (P80 queda como señal), mediana y P90 del
+#  ensamble en mm, referencia Niño 1997-98 / 2017, diagnóstico de sesgo SEAS5 vs
+#  ERA5, corrección Lima Metropolitana/Callao, ENFEN N°17-2026 y guiones en PDF.
+#
 #  Ejecución local:
 #    pip install streamlit geopandas shapely plotly requests pandas numpy fpdf2
 #    streamlit run app.py
@@ -252,9 +256,13 @@ TAMANO_LOTE_GRILLA = 20       # nº de puntos por llamada batched a la API
 COSTA_NORTE_INTERMEDIA = {
     "tumbes", "piura", "lambayeque", "la libertad",
     "ancash", "lima", "lima province", "callao", "ica",
+    # geoBoundaries separa Lima Metropolitana y el Callao del departamento de
+    # Lima; sin estos nombres, Lurín, Chosica o el Callao caían en "Otras
+    # regiones" y la sección de consecuencias quedaba vacía.
+    "municipalidad metropolitana de lima", "provincia constitucional del callao",
 }
 SIERRA_SUR_ALTIPLANO = {
-    "puno", "cusco", "arequipa", "apurimac", "huancavelica", "ayacucho",
+    "puno", "cusco", "cuzco", "arequipa", "apurimac", "huancavelica", "ayacucho",
 }
 
 # Fuentes de datos abiertas (sin API key)
@@ -312,9 +320,33 @@ ATRIBUCION_BASE = (
     '&copy; <a href="https://carto.com/attributions">CARTO</a>'
 )
 
-UMBRAL_PROBABILIDAD_CRITICA = 55.0  # % de miembros sobre el percentil 80
-PERCENTIL_EXTREMO = 80              # Definición operativa de "lluvia extrema"
+UMBRAL_PROBABILIDAD_CRITICA = 55.0  # % de miembros sobre el percentil del SEMÁFORO
+# Dos umbrales climatológicos (ERA5 1991-2020, total mensual):
+#  - P80 = SEÑAL HÚMEDA: "mes más lluvioso de lo habitual" (2 de cada 10 años).
+#          Se reporta como contexto; ya NO define el semáforo.
+#  - P90 = SEMÁFORO: "mes de lluvia fuerte" (1 de cada 10 años). Coherente con
+#          el criterio SENAMHI/ENFEN de "lluvias fuertes" = P90 (que ellos aplican
+#          a escala diaria; aquí se aplica al total mensual).
+PERCENTIL_EXTREMO = 80              # Señal húmeda (contexto)
+PERCENTIL_SEMAFORO = 90             # Umbral que gobierna el semáforo
 RADIO_BUFFER_KM = 10.0              # Zona de operación local alrededor de la planta
+
+# Lámina de referencia baja: si el umbral P90 del mes es menor a este valor, la
+# señal describe un mes anómalo para un clima muy seco, no necesariamente lluvias
+# intensas. Se agrega una nota explicativa en la narrativa (parámetro calibrable).
+LAMINA_REFERENCIA_BAJA_MM = 10.0
+
+# Años Niño de referencia (total mensual ERA5 en el punto del activo):
+#  - El Niño 1997-98: octubre 1997 a abril 1998.
+#  - El Niño Costero 2017: enero a abril 2017.
+# Para cada mes se toma el mayor de los disponibles como "referencia Niño".
+MESES_NINO_9798 = {10: 1997, 11: 1997, 12: 1997, 1: 1998, 2: 1998, 3: 1998, 4: 1998}
+MESES_NINO_2017 = {1: 2017, 2: 2017, 3: 2017, 4: 2017}
+
+# Diagnóstico de sesgo: razón entre la normal del propio SEAS5 (hindcasts) y la
+# normal ERA5. Fuera de este rango se considera que el modelo tiene sesgo.
+RAZON_SESGO_HUMEDO = 1.5
+RAZON_SESGO_SECO = 0.67
 
 # Umbral intermedio (didáctico) para clasificar la amenaza mensual en la Pestaña 2.
 UMBRAL_PROBABILIDAD_VIGILANCIA = 40.0  # % — entre este valor y el crítico = vigilancia
@@ -326,18 +358,24 @@ VERSION_ESTADO = "Versión BETA — herramienta en desarrollo"
 
 # Contexto oficial hardcodeado según especificación del proyecto.
 # NOTA DE MANTENIMIENTO: actualizar este bloque con cada nuevo comunicado ENFEN.
+#   Vigente: Comunicado N°17-2026 (28/09/2026). Próximo: 15/10/2026.
 TEXTO_ENFEN = (
-    "<b>Contexto Oficial ENFEN (Comunicado N°12-2026):</b> "
-    "Alerta de El Niño Costero activa. Probabilidades estimadas para el "
-    "verano 2026-2027: Niño Costero en región 1+2 "
-    "(<b>Fuerte 48% / Moderado 46%</b>), El Niño Global en región 3.4 "
-    "(<b>Fuerte 44% / Moderado 36%</b>)."
+    "<b>Contexto Oficial ENFEN (Comunicado N°17-2026, 28/09/2026):</b> "
+    "Alerta de El Niño Costero vigente. El Niño Costero (región Niño 1+2) se "
+    "mantendría con magnitud <b>extraordinaria</b> hasta enero de 2027, "
+    "debilitándose hacia el otoño; El Niño en la región Niño 3.4 se mantendría "
+    "<b>muy fuerte</b> hasta enero de 2027. Para octubre-diciembre se prevén "
+    "lluvias superiores a lo normal en la costa norte y central, y para el "
+    "verano 2027, en la costa norte, costa central y sierra norte occidental."
 )
 TEXTO_ENFEN_PDF = (
-    "Contexto Oficial ENFEN (Comunicado N 12-2026): Alerta de El Niño Costero "
-    "activa. Probabilidades estimadas para el verano 2026-2027: Niño Costero en "
-    "región 1+2 (Fuerte 48% / Moderado 46%), El Niño Global en región 3.4 "
-    "(Fuerte 44% / Moderado 36%)."
+    "Contexto Oficial ENFEN (Comunicado N°17-2026, 28/09/2026): Alerta de El Niño "
+    "Costero vigente. El Niño Costero (región Niño 1+2) se mantendría con magnitud "
+    "extraordinaria hasta enero de 2027, debilitándose hacia el otoño; El Niño en la "
+    "región Niño 3.4 se mantendría muy fuerte hasta enero de 2027. Para "
+    "octubre-diciembre se prevén lluvias superiores a lo normal en la costa norte y "
+    "central, y para el verano 2027, en la costa norte, costa central y sierra norte "
+    "occidental. Próximo comunicado oficial: 15/10/2026."
 )
 
 
@@ -491,7 +529,7 @@ def obtener_probabilidad_grilla(puntos: tuple, anio: int, mes: int) -> pd.DataFr
     Se usa SOLO el bloque mensual (no diario) porque: (a) tiene mayor alcance
     de pronóstico —cubre meses que el diario ya no alcanza, como enero—, (b) es
     la mitad de llamadas HTTP (más rápido) y (c) es más robusto. La probabilidad
-    de excedencia rigurosa contra el umbral P80 histórico vive en la Pestaña 2,
+    de excedencia rigurosa contra los umbrales P80/P90 históricos vive en la Pestaña 2,
     calculada en el punto exacto del activo. La función queda cacheada por
     (grilla, año, mes); si un lote falla, se salta ese lote sin romper el resto.
     """
@@ -907,9 +945,26 @@ def obtener_climatologia(lat: float, lon: float) -> pd.DataFrame:
     mensual = df.groupby(["anio", "mes"])["pp"].sum().reset_index()
     resumen = (
         mensual.groupby("mes")["pp"]
-        .agg(normal_mm="mean", p80_mm=lambda s: float(np.percentile(s, PERCENTIL_EXTREMO)))
+        .agg(normal_mm="mean",
+             p80_mm=lambda s: float(np.percentile(s, PERCENTIL_EXTREMO)),
+             p90_mm=lambda s: float(np.percentile(s, PERCENTIL_SEMAFORO)))
         .reset_index()
     )
+
+    # Referencias Niño: total mensual observado (ERA5) en el mismo mes de los
+    # eventos 1997-98 y 2017, en el punto del activo.
+    def _total(anio, mes):
+        fila = mensual[(mensual["anio"] == anio) & (mensual["mes"] == mes)]
+        return float(fila["pp"].iloc[0]) if not fila.empty else np.nan
+
+    resumen["nino9798_mm"] = [
+        _total(MESES_NINO_9798[m], m) if m in MESES_NINO_9798 else np.nan
+        for m in resumen["mes"]
+    ]
+    resumen["nino2017_mm"] = [
+        _total(MESES_NINO_2017[m], m) if m in MESES_NINO_2017 else np.nan
+        for m in resumen["mes"]
+    ]
     return resumen
 
 
@@ -987,6 +1042,8 @@ def obtener_pronostico_seas5(lat: float, lon: float):
             "monthly": "precipitation_mean,precipitation_anomaly",
             "models": "ecmwf_seas5",
             "timezone": "auto",
+            "forecast_days": 215,   # Igual que en la grilla: sin esto el dato
+                                    # mensual se corta antes de enero/febrero.
         }
         r2 = requests.get(URL_API_ESTACIONAL, params=params_mensual, timeout=120)
         r2.raise_for_status()
@@ -1047,13 +1104,156 @@ def calcular_probabilidad_excedencia(df_miembros, climatologia, anio, mes):
     umbral = float(climatologia.loc[climatologia["mes"] == mes, "p80_mm"].iloc[0])
     normal = float(climatologia.loc[climatologia["mes"] == mes, "normal_mm"].iloc[0])
 
-    sel = df_miembros[(df_miembros["anio"] == anio) & (df_miembros["mes"] == mes)]
+    sel = _miembros_del_mes(df_miembros, anio, mes)
     if sel.empty:
         return None, umbral, normal, sel
 
     valores = sel["total_mm"].to_numpy()
     probabilidad = 100.0 * float(np.mean(valores > umbral))
     return probabilidad, umbral, normal, sel
+
+
+def _miembros_del_mes(df_miembros, anio, mes):
+    """Filas del ensamble (un total mensual por miembro) para un mes dado."""
+    if df_miembros is None or df_miembros.empty:
+        return pd.DataFrame(columns=["anio", "mes", "miembro", "total_mm"])
+    return df_miembros[(df_miembros["anio"] == anio) & (df_miembros["mes"] == mes)]
+
+
+def _valor(fila, columna):
+    """Lee una columna de la climatología como float (NaN si no existe)."""
+    if columna not in fila.index:
+        return np.nan
+    v = pd.to_numeric(fila[columna], errors="coerce")
+    return float(v) if pd.notna(v) else np.nan
+
+
+def referencia_nino(fila_clima):
+    """
+    Mayor total mensual entre los meses Niño de referencia disponibles
+    (1997-98 y 2017) para ese mes calendario. Devuelve (mm, etiqueta_año).
+    """
+    mes = int(fila_clima["mes"])
+    candidatos = []
+    v9798 = _valor(fila_clima, "nino9798_mm")
+    if np.isfinite(v9798) and mes in MESES_NINO_9798:
+        candidatos.append((v9798, str(MESES_NINO_9798[mes])))
+    v2017 = _valor(fila_clima, "nino2017_mm")
+    if np.isfinite(v2017) and mes in MESES_NINO_2017:
+        candidatos.append((v2017, str(MESES_NINO_2017[mes])))
+    if not candidatos:
+        return np.nan, None
+    return max(candidatos, key=lambda c: c[0])
+
+
+def resumen_mes(df_miembros, climatologia, etiqueta, anio, mes):
+    """
+    Todas las métricas de un mes de la temporada, en un solo diccionario:
+      - Clima ERA5: normal, P80 (señal), P90 (semáforo), referencia Niño.
+      - Pronóstico SEAS5: mediana y P90 del ensamble (mm) y las probabilidades
+        de superar P80, P90 y la referencia Niño.
+    La clave "prob" es la probabilidad que gobierna el SEMÁFORO (> P90).
+    """
+    fila_c = climatologia.loc[climatologia["mes"] == mes].iloc[0]
+    normal = _valor(fila_c, "normal_mm")
+    p80 = _valor(fila_c, "p80_mm")
+    p90 = _valor(fila_c, "p90_mm")
+    ref_mm, ref_anio = referencia_nino(fila_c)
+
+    sel = _miembros_del_mes(df_miembros, anio, mes)
+    valores = sel["total_mm"].to_numpy(dtype=float) if not sel.empty else np.array([])
+    valores = valores[np.isfinite(valores)]
+
+    def _prob(umbral):
+        if valores.size == 0 or not np.isfinite(umbral):
+            return None
+        return 100.0 * float(np.mean(valores > umbral))
+
+    mediana_ens, p90_ens = estadisticos_ensamble(sel)
+    return {
+        "mes": etiqueta, "anio": anio, "num_mes": mes,
+        "normal": normal, "p80": p80, "p90": p90,
+        "ref_nino_mm": ref_mm, "ref_nino_anio": ref_anio,
+        "prob": _prob(p90),            # SEMÁFORO (> P90)
+        "prob_p80": _prob(p80),        # señal húmeda (> P80)
+        "prob_ref": _prob(ref_mm),     # supera el mes Niño de referencia
+        "mediana_ens": mediana_ens, "p90_ens": p90_ens,
+        "n_miembros": int(valores.size),
+    }
+
+
+def diagnostico_sesgo(df_miembros, df_anom, climatologia):
+    """
+    Diagnóstico de sesgo del modelo en el punto del activo.
+
+    Open-Meteo entrega, por mes, la media del ensamble y su ANOMALÍA respecto a
+    la climatología del propio SEAS5 (calculada con sus pronósticos
+    retrospectivos). Por tanto:
+        normal_SEAS5 = media - anomalía
+    Comparar esa normal con la normal ERA5 indica si el modelo "cree" que el
+    lugar es más lluvioso (razón > 1) o más seco (razón < 1) de lo que registra
+    el reanálisis. Una razón alta en la costa hiperárida infla la probabilidad
+    de superar umbrales ERA5 de pocos milímetros.
+
+    Unidades: se verifican empíricamente comparando la media mensual de la API
+    con el total mensual promedio de los 51 miembros diarios (ya descargados):
+    ~días del mes -> la API está en mm/día; ~1 -> la API está en mm/mes.
+
+    Devuelve (DataFrame, dict_meta). DataFrame vacío si no hay datos.
+    """
+    meta = {"unidad": "no disponible", "factor": None, "mensaje": None}
+    if df_anom is None or df_anom.empty or df_miembros is None or df_miembros.empty:
+        meta["mensaje"] = ("No hay dato mensual de anomalías de SEAS5 en esta corrida (modo "
+                           "demostración o falla de la API); el diagnóstico no está disponible.")
+        return pd.DataFrame(), meta
+
+    medias_ens = (df_miembros.groupby(["anio", "mes"])["total_mm"].mean()
+                  .rename("media_ens_mm").reset_index())
+    base = df_anom.merge(medias_ens, on=["anio", "mes"], how="inner")
+    base = base[(base["media_mm_dia"] > 0) & np.isfinite(base["media_ens_mm"])]
+    if base.empty:
+        meta["mensaje"] = "No hay meses comunes entre el dato mensual y el diario."
+        return pd.DataFrame(), meta
+
+    factor = float(base["media_ens_mm"].sum() / base["media_mm_dia"].sum())
+    meta["factor"] = factor
+    if 20.0 <= factor <= 40.0:
+        meta["unidad"] = "mm/día"
+        conv = {(r.anio, r.mes): pd.Period(f"{r.anio}-{r.mes:02d}").days_in_month
+                for r in df_anom.itertuples()}
+    elif 0.6 <= factor <= 1.6:
+        meta["unidad"] = "mm/mes"
+        conv = {(r.anio, r.mes): 1.0 for r in df_anom.itertuples()}
+    else:
+        meta["unidad"] = "no identificada"
+        meta["mensaje"] = (f"La relación entre el dato mensual y el diario ({factor:.2f}) no "
+                           "corresponde a mm/día ni a mm/mes; revisar la API antes de usar "
+                           "este diagnóstico.")
+        return pd.DataFrame(), meta
+
+    filas = []
+    for etiqueta, anio, mes in MESES_EVENTO:
+        fila_a = df_anom[(df_anom["anio"] == anio) & (df_anom["mes"] == mes)]
+        normal_era5 = float(climatologia.loc[climatologia["mes"] == mes, "normal_mm"].iloc[0])
+        if fila_a.empty:
+            filas.append({"mes": etiqueta, "normal_era5": normal_era5,
+                          "normal_seas5": None, "razon": None, "lectura": "sin dato"})
+            continue
+        media = float(fila_a["media_mm_dia"].iloc[0])
+        anom = float(fila_a["anomalia_mm_dia"].iloc[0])
+        normal_seas5 = max(media - anom, 0.0) * conv[(anio, mes)]
+        razon = normal_seas5 / normal_era5 if normal_era5 > 0.05 else None
+        if razon is None:
+            lectura = "normal ERA5 ~0"
+        elif razon > RAZON_SESGO_HUMEDO:
+            lectura = "modelo más húmedo"
+        elif razon < RAZON_SESGO_SECO:
+            lectura = "modelo más seco"
+        else:
+            lectura = "consistente"
+        filas.append({"mes": etiqueta, "normal_era5": normal_era5,
+                      "normal_seas5": normal_seas5, "razon": razon, "lectura": lectura})
+    return pd.DataFrame(filas), meta
 
 
 # =============================================================================
@@ -1397,7 +1597,7 @@ def estadisticos_ensamble(ensamble_mes):
 
 
 def nivel_semaforo(probabilidad) -> str:
-    """Traduce la probabilidad de excedencia P80 al nivel del semáforo."""
+    """Traduce la probabilidad de excedencia del P90 (semáforo) al nivel del semáforo."""
     if probabilidad is None:
         return "bajo"
     if probabilidad >= UMBRAL_PROBABILIDAD_CRITICA:
@@ -1444,8 +1644,8 @@ def evaluar_consecuencias(dep_norm, sector, probabilidad, anomalia_mm_dia):
 
     if es_costa:
         return ("alto", "Vigilancia — Costa bajo Alerta ENFEN",
-                f"La probabilidad de excedencia del percentil {PERCENTIL_EXTREMO} "
-                f"({prob:.0f}%) aún no supera el umbral crítico del "
+                f"La probabilidad de superar el percentil {PERCENTIL_SEMAFORO} "
+                f"({prob:.0f}%) aún no alcanza el umbral crítico del "
                 f"{UMBRAL_PROBABILIDAD_CRITICA:.0f}%, pero la región permanece bajo "
                 "alerta oficial de El Niño Costero. Mantener monitoreo mensual del "
                 "ensamble SEAS5 (actualización cada día 5) y revisar planes de "
@@ -1461,9 +1661,61 @@ def evaluar_consecuencias(dep_norm, sector, probabilidad, anomalia_mm_dia):
 # 6. GENERACIÓN DEL REPORTE PDF (fpdf2, gráfico dibujado nativamente)
 # =============================================================================
 
+_SUSTITUCIONES_LATIN1 = {
+    "—": "-", "–": "-", "−": "-", "“": '"', "”": '"', "‘": "'", "’": "'",
+    "…": "...", "≥": ">=", "≤": "<=", "→": "->", "≈": "~", "•": "-",
+}
+
+
 def _latin1(texto: str) -> str:
-    """fpdf2 con fuentes base usa Latin-1; se sanea cualquier carácter fuera de rango."""
+    """fpdf2 con fuentes base usa Latin-1. Primero se reemplazan los signos
+    tipográficos comunes (guion largo, comillas curvas, etc.) por su equivalente
+    simple; antes salían como '?' en el PDF. Lo que quede fuera de rango se sanea."""
+    for original, simple in _SUSTITUCIONES_LATIN1.items():
+        texto = texto.replace(original, simple)
     return texto.encode("latin-1", "replace").decode("latin-1")
+
+
+def _fmt(valor, decimales=1, sufijo=""):
+    """Formatea un número para tablas; guion si falta el dato."""
+    if valor is None:
+        return "-"
+    try:
+        v = float(valor)
+    except (TypeError, ValueError):
+        return "-"
+    if not np.isfinite(v):
+        return "-"
+    return f"{v:.{decimales}f}{sufijo}"
+
+
+_COLOR_RELLENO_NIVEL = {"CRÍTICA": (228, 87, 46), "VIGILANCIA": (245, 184, 65),
+                        "BAJA": (89, 201, 165)}
+
+
+def _tabla_pdf(pdf, anchos, encabezados, filas):
+    """Tabla simple con encabezado púrpura y filas alternadas.
+    `filas` es una lista de listas de (texto, color_rgb_o_None)."""
+    pdf.set_font("Helvetica", "B", 8)
+    pdf.set_fill_color(112, 30, 99)  # Púrpura del logotipo
+    pdf.set_text_color(255, 255, 255)
+    for ancho, encabezado in zip(anchos, encabezados):
+        pdf.cell(ancho, 7, _latin1(encabezado), border=1, align="C", fill=True)
+    pdf.ln()
+    pdf.set_font("Helvetica", "", 8.5)
+    for i, fila in enumerate(filas):
+        if i % 2 == 0:
+            pdf.set_fill_color(240, 244, 249)
+        else:
+            pdf.set_fill_color(255, 255, 255)
+        for j, (ancho, (texto, color)) in enumerate(zip(anchos, fila)):
+            pdf.set_text_color(*(color or (20, 20, 20)))
+            pdf.set_font("Helvetica", "B" if (color and color != (120, 120, 120) and j > 0) else "", 8.5)
+            pdf.cell(ancho, 6.2, _latin1(str(texto)), border=1,
+                     align="L" if j == 0 else "C", fill=True)
+        pdf.ln()
+    pdf.set_text_color(20, 20, 20)
+    pdf.set_font("Helvetica", "", 9)
 
 
 def generar_pdf(contexto: dict) -> bytes:
@@ -1490,7 +1742,7 @@ def generar_pdf(contexto: dict) -> bytes:
     pdf.cell(0, 7, _latin1("1. Identificación del activo evaluado"), new_x="LMARGIN", new_y="NEXT")
     pdf.set_font("Helvetica", "", 10)
     filas = [
-        ("Coordenadas de la central", f"Lat {contexto['lat']:.5f} / Lon {contexto['lon']:.5f}"),
+        ("Coordenadas del activo", f"Lat {contexto['lat']:.5f} / Lon {contexto['lon']:.5f}"),
         ("Departamento detectado (geoespacial)", contexto["departamento"]),
         ("Sector industrial", contexto["sector"]),
         ("Mes evaluado", contexto["mes_etiqueta"]),
@@ -1507,75 +1759,105 @@ def generar_pdf(contexto: dict) -> bytes:
         pdf.multi_cell(0, 6, new_x="LMARGIN", new_y="NEXT", text= _latin1(str(valor)))
     pdf.ln(2)
 
-    # --- Resultado probabilístico con barra dibujada nativamente ---
+    # --- 2. Resultado del mes evaluado ---
+    sel = contexto.get("sel", {}) or {}
     pdf.set_font("Helvetica", "B", 11)
-    pdf.cell(0, 7, _latin1("2. Resultado probabilístico de amenaza (lluvia mensual)"), new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 7, _latin1("2. Resultado probabilístico del mes evaluado (lluvia mensual)"), new_x="LMARGIN", new_y="NEXT")
     pdf.set_font("Helvetica", "", 10)
-    prob = contexto["probabilidad"]
-    pdf.multi_cell(0, 5.5, new_x="LMARGIN", new_y="NEXT", text= _latin1(
-        f"Normal climatológica ERA5 (1991-2020) del mes: {contexto['normal']:.1f} mm. "
-        f"Umbral de extremo (percentil {PERCENTIL_EXTREMO}): {contexto['umbral']:.1f} mm. "
-        f"Probabilidad de excedencia según el ensamble de {contexto['n_miembros']} "
-        f"miembros SEAS5: {prob:.1f}%."
+    texto_ref = ""
+    if sel.get("ref_nino_anio"):
+        texto_ref = (f" Mismo mes en el Niño de referencia ({sel['ref_nino_anio']}): "
+                     f"{_fmt(sel.get('ref_nino_mm'))} mm.")
+    texto_pron = ""
+    if sel.get("prob") is not None:
+        texto_pron = (
+            f" Pronóstico SEAS5 ({sel.get('n_miembros', 0)} miembros): mediana del ensamble "
+            f"{_fmt(sel.get('mediana_ens'))} mm; P90 del ensamble {_fmt(sel.get('p90_ens'))} mm."
+        )
+    pdf.multi_cell(0, 5.5, new_x="LMARGIN", new_y="NEXT", text=_latin1(
+        f"Clima de referencia ERA5 1991-2020 en el punto: normal {_fmt(sel.get('normal'))} mm; "
+        f"umbral de señal P{PERCENTIL_EXTREMO} {_fmt(sel.get('p80'))} mm; umbral del semáforo "
+        f"P{PERCENTIL_SEMAFORO} {_fmt(sel.get('p90'))} mm.{texto_ref}{texto_pron}"
     ))
-    # Barra de probabilidad: fondo gris + relleno proporcional coloreado por nivel.
-    x0, y0, ancho, alto = 12, pdf.get_y() + 2, 150, 9
+    prob = sel.get("prob")
+    pdf.set_font("Helvetica", "B", 10)
+    pdf.cell(0, 6, _latin1(f"Probabilidad de superar el P{PERCENTIL_SEMAFORO} (semáforo):"),
+             new_x="LMARGIN", new_y="NEXT")
+    x0, y0, ancho, alto = 12, pdf.get_y() + 1, 150, 9
     pdf.set_fill_color(225, 228, 233)
     pdf.rect(x0, y0, ancho, alto, "F")
-    if prob > UMBRAL_PROBABILIDAD_CRITICA:
-        pdf.set_fill_color(228, 87, 46)
-    elif prob > 35:
-        pdf.set_fill_color(245, 184, 65)
-    else:
-        pdf.set_fill_color(89, 201, 165)
-    pdf.rect(x0, y0, ancho * max(min(prob, 100), 0) / 100.0, alto, "F")
+    if prob is not None:
+        nivel_pdf, _ = _nivel_amenaza_pdf(prob)
+        pdf.set_fill_color(*_COLOR_RELLENO_NIVEL.get(nivel_pdf, (89, 201, 165)))
+        pdf.rect(x0, y0, ancho * max(min(prob, 100), 0) / 100.0, alto, "F")
     pdf.set_xy(x0 + ancho + 4, y0 + 1.5)
     pdf.set_font("Helvetica", "B", 11)
-    pdf.cell(0, 6, f"{prob:.1f}%", new_x="LMARGIN", new_y="NEXT")
-    pdf.set_y(y0 + alto + 5)
-
-    # --- Tabla mes a mes de la temporada crítica (clima vs señal probabilística) ---
-    pdf.set_font("Helvetica", "B", 11)
-    pdf.cell(0, 7, _latin1("3. Panorama mensual de la temporada crítica (Oct 2026 - Abr 2027)"), new_x="LMARGIN", new_y="NEXT")
-
-    anchos = (48, 44, 48, 46)  # Mes | Normal | Umbral P80 | Probabilidad
-    encabezados = ("Mes", "Normal ERA5 (mm)",
-                   f"Umbral P{PERCENTIL_EXTREMO} (mm)", "Prob. excedencia (%)")
-    pdf.set_font("Helvetica", "B", 9)
-    pdf.set_fill_color(112, 30, 99)  # Púrpura del logotipo
-    pdf.set_text_color(255, 255, 255)
-    for ancho, encabezado in zip(anchos, encabezados):
-        pdf.cell(ancho, 7, _latin1(encabezado), border=1, align="C", fill=True)
-    pdf.ln()
-
+    pdf.cell(0, 6, _latin1("n/d" if prob is None else f"{prob:.1f}%"), new_x="LMARGIN", new_y="NEXT")
+    pdf.set_y(y0 + alto + 2)
     pdf.set_font("Helvetica", "", 9)
-    for i, fila_mes in enumerate(contexto.get("temporada", [])):
-        # Filas alternadas para legibilidad (estilo zebra).
-        pdf.set_fill_color(240, 244, 249) if i % 2 == 0 else pdf.set_fill_color(255, 255, 255)
-        pdf.set_text_color(20, 20, 20)
-        pdf.cell(anchos[0], 6.5, _latin1(fila_mes["mes"]), border=1, fill=True)
-        pdf.cell(anchos[1], 6.5, f"{fila_mes['normal']:.1f}", border=1, align="C", fill=True)
-        pdf.cell(anchos[2], 6.5, f"{fila_mes['p80']:.1f}", border=1, align="C", fill=True)
-        prob_mes = fila_mes["prob"]
-        if prob_mes is None or pd.isna(prob_mes):
-            pdf.set_text_color(120, 120, 120)
-            texto_prob = "fuera de horizonte"
-        else:
-            # Semáforo textual: rojo crítico, ámbar vigilancia, verde normal.
-            if prob_mes > UMBRAL_PROBABILIDAD_CRITICA:
-                pdf.set_text_color(200, 60, 30)
-            elif prob_mes > 35:
-                pdf.set_text_color(180, 130, 20)
-            else:
-                pdf.set_text_color(30, 130, 95)
-            texto_prob = f"{prob_mes:.1f}"
-        pdf.cell(anchos[3], 6.5, _latin1(texto_prob), border=1, align="C", fill=True)
-        pdf.ln()
+    if prob is None:
+        linea = "Mes fuera del horizonte actual de SEAS5: solo se dispone de la climatología."
+    else:
+        linea = (f"Señal de mes más lluvioso de lo habitual (> P{PERCENTIL_EXTREMO}): "
+                 f"{_fmt(sel.get('prob_p80'))}%.")
+        if sel.get("prob_ref") is not None:
+            linea += (f"  Supera el mismo mes del Niño {sel.get('ref_nino_anio')}: "
+                      f"{_fmt(sel.get('prob_ref'))}%.")
+    pdf.multi_cell(0, 5, new_x="LMARGIN", new_y="NEXT", text=_latin1(linea))
+    pdf.ln(3)
+
+    # --- 3. Panorama de la temporada: clima de referencia + pronóstico ---
+    temporada = contexto.get("temporada", [])
+    pdf.set_font("Helvetica", "B", 11)
+    pdf.cell(0, 7, _latin1("3. Panorama mensual de la temporada (Oct 2026 - Abr 2027)"), new_x="LMARGIN", new_y="NEXT")
+
+    pdf.set_font("Helvetica", "B", 9)
+    pdf.cell(0, 6, _latin1("3.a Clima de referencia en el punto (ERA5 1991-2020, mm/mes)"),
+             new_x="LMARGIN", new_y="NEXT")
+    filas_a = []
+    for f in temporada:
+        ref_txt = "-" if not f.get("ref_nino_anio") else f"{_fmt(f.get('ref_nino_mm'))} ({f['ref_nino_anio']})"
+        filas_a.append([(f["mes"], None), (_fmt(f.get("normal")), None),
+                        (_fmt(f.get("p80")), None), (_fmt(f.get("p90")), None),
+                        (ref_txt, None)])
+    _tabla_pdf(pdf, (40, 30, 30, 30, 60),
+               ("Mes", "Normal", f"Señal P{PERCENTIL_EXTREMO}",
+                f"Semáforo P{PERCENTIL_SEMAFORO}", "Mes Niño de referencia (año)"),
+               filas_a)
+    pdf.ln(2)
+
+    pdf.set_font("Helvetica", "B", 9)
+    pdf.cell(0, 6, _latin1(f"3.b Pronóstico SEAS5 ({contexto.get('n_miembros', 51)} miembros) por mes"),
+             new_x="LMARGIN", new_y="NEXT")
+    filas_b = []
+    for f in temporada:
+        prob_mes = f.get("prob")
+        if prob_mes is None:
+            gris = (120, 120, 120)
+            filas_b.append([(f["mes"], None)] + [("fuera de horizonte", gris)] + [("-", gris)] * 4)
+            continue
+        _, color_nivel = _nivel_amenaza_pdf(prob_mes)
+        filas_b.append([
+            (f["mes"], None),
+            (_fmt(f.get("mediana_ens")), None),
+            (_fmt(f.get("p90_ens")), None),
+            (_fmt(f.get("prob_p80"), 0), None),
+            (_fmt(prob_mes, 0), color_nivel),
+            (_fmt(f.get("prob_ref"), 0), None),
+        ])
+    _tabla_pdf(pdf, (34, 30, 28, 30, 36, 32),
+               ("Mes", "Mediana (mm)", "P90 ens. (mm)", f"> P{PERCENTIL_EXTREMO} (%)",
+                f"> P{PERCENTIL_SEMAFORO} semáforo (%)", "> Niño ref. (%)"),
+               filas_b)
     pdf.set_text_color(20, 20, 20)
     pdf.set_font("Helvetica", "I", 8)
     pdf.multi_cell(0, 4.5, new_x="LMARGIN", new_y="NEXT", text=_latin1(
-        "Probabilidad = fracción de miembros del ensamble SEAS5 cuyo total mensual "
-        f"supera el percentil {PERCENTIL_EXTREMO} del clima ERA5 1991-2020 en el punto del activo."
+        "Cada probabilidad es la fracción de miembros del ensamble SEAS5 cuyo total mensual supera "
+        f"el umbral indicado del clima ERA5 1991-2020 en el punto del activo. P{PERCENTIL_EXTREMO}: lo "
+        f"superan 2 de cada 10 años (señal de mes más lluvioso). P{PERCENTIL_SEMAFORO}: lo superan "
+        "1 de cada 10 años (lluvia mensual fuerte; gobierna el semáforo). Niño ref.: mayor total "
+        "observado en ese mes durante El Niño 1997-98 o El Niño Costero 2017. Mediana y P90 del "
+        "ensamble: magnitud pronosticada en mm."
     ))
     pdf.ln(2)
 
@@ -1584,15 +1866,25 @@ def generar_pdf(contexto: dict) -> bytes:
     pdf.set_text_color(20, 20, 20)
     pdf.cell(0, 6, _latin1("Lectura mes a mes de la temporada:"), new_x="LMARGIN", new_y="NEXT")
     pdf.set_font("Helvetica", "", 9)
-    for color, texto in narrar_temporada_pdf(contexto.get("temporada", [])):
+    for color, encabezado, cuerpo in narrar_temporada_pdf(temporada):
         pdf.set_text_color(*color)
-        pdf.multi_cell(0, 5, new_x="LMARGIN", new_y="NEXT", text=_latin1("- " + texto))
+        pdf.set_font("Helvetica", "B", 9)
+        pdf.cell(0, 5, _latin1(encabezado), new_x="LMARGIN", new_y="NEXT")
+        pdf.set_text_color(40, 40, 40)
+        pdf.set_font("Helvetica", "", 9)
+        pdf.multi_cell(0, 4.6, new_x="LMARGIN", new_y="NEXT", text=_latin1(cuerpo))
+        pdf.ln(1)
+    nota = nota_lamina_baja(temporada)
+    if nota:
+        pdf.set_font("Helvetica", "B", 9)
+        pdf.set_text_color(80, 22, 74)
+        pdf.multi_cell(0, 4.6, new_x="LMARGIN", new_y="NEXT", text=_latin1("Nota: " + nota))
     pdf.set_text_color(90, 90, 90)
     pdf.set_font("Helvetica", "I", 8)
     pdf.multi_cell(0, 4.5, new_x="LMARGIN", new_y="NEXT", text=_latin1(
-        f"Semáforo: CRÍTICA (>= {UMBRAL_PROBABILIDAD_CRITICA:.0f}%)  |  VIGILANCIA "
-        f"({UMBRAL_PROBABILIDAD_VIGILANCIA:.0f}-{UMBRAL_PROBABILIDAD_CRITICA:.0f}%)  |  "
-        f"BAJA (< {UMBRAL_PROBABILIDAD_VIGILANCIA:.0f}%)."
+        f"Semáforo (probabilidad de superar el P{PERCENTIL_SEMAFORO}): CRÍTICA (>= "
+        f"{UMBRAL_PROBABILIDAD_CRITICA:.0f}%)  |  VIGILANCIA ({UMBRAL_PROBABILIDAD_VIGILANCIA:.0f}-"
+        f"{UMBRAL_PROBABILIDAD_CRITICA:.0f}%)  |  BAJA (< {UMBRAL_PROBABILIDAD_VIGILANCIA:.0f}%)."
     ))
     pdf.set_text_color(20, 20, 20)
     pdf.ln(3)
@@ -1625,19 +1917,64 @@ def generar_pdf(contexto: dict) -> bytes:
         "Marco de riesgo IPCC AR6 (CMIP6/SSP): riesgo = amenaza x exposición x vulnerabilidad.",
         "geoBoundaries (Runfola et al., 2020, PLoS ONE): límites administrativos ADM1 del Perú.",
         "ENFEN (Comisión Multisectorial): comunicados oficiales de alerta El Niño Costero.",
-        f"Definición de extremo: excedencia del percentil {PERCENTIL_EXTREMO} de la distribución "
-        "empírica mensual 1991-2020; probabilidad = fracción de miembros del ensamble que exceden "
-        "dicho umbral.",
+        f"Umbrales: percentiles {PERCENTIL_EXTREMO} (señal) y {PERCENTIL_SEMAFORO} (semáforo) de la "
+        "distribución empírica de totales mensuales ERA5 1991-2020 en el punto; probabilidad = fracción "
+        "de miembros del ensamble que superan cada umbral. El P90 sigue el criterio SENAMHI/ENFEN de "
+        "'lluvias fuertes', aplicado aquí al total mensual.",
+        "Referencia Niño: total mensual ERA5 en el mismo mes de El Niño 1997-98 (oct 1997 - abr 1998) "
+        "y de El Niño Costero 2017 (ene - abr 2017); se usa el mayor de ambos.",
     ]
     for ref in referencias:
         pdf.multi_cell(0, 5, new_x="LMARGIN", new_y="NEXT", text= _latin1("- " + ref))
     pdf.ln(3)
+
+    # --- 7. Diagnóstico de sesgo del modelo (uso técnico) ---
+    pdf.set_font("Helvetica", "B", 11)
+    pdf.cell(0, 7, _latin1("7. Diagnóstico de sesgo del modelo en el punto (uso técnico)"),
+             new_x="LMARGIN", new_y="NEXT")
+    pdf.set_font("Helvetica", "", 9)
+    pdf.multi_cell(0, 5, new_x="LMARGIN", new_y="NEXT", text=_latin1(
+        "Compara la normal mensual del propio SEAS5 (calculada por el ECMWF con sus pronósticos "
+        "retrospectivos y obtenida como media del ensamble menos su anomalía) con la normal ERA5. "
+        f"Una razón mayor a {RAZON_SESGO_HUMEDO:.1f} indica que el modelo es más lluvioso que el "
+        "reanálisis en este punto, lo que infla las probabilidades de superar umbrales ERA5. "
+        "Resultado orientativo; aún no se aplica corrección."
+    ))
+    diag = contexto.get("diagnostico") or []
+    meta = contexto.get("diag_meta") or {}
+    if diag:
+        filas_d = []
+        for f in diag:
+            lectura = f.get("lectura", "")
+            color = (200, 60, 30) if lectura == "modelo más húmedo" else (
+                (40, 90, 170) if lectura == "modelo más seco" else None)
+            filas_d.append([(f["mes"], None), (_fmt(f.get("normal_era5")), None),
+                            (_fmt(f.get("normal_seas5")), None),
+                            (_fmt(f.get("razon"), 2), color), (lectura, color)])
+        _tabla_pdf(pdf, (40, 34, 38, 34, 44),
+                   ("Mes", "Normal ERA5 (mm)", "Normal SEAS5 (mm)", "Razón SEAS5/ERA5", "Lectura"),
+                   filas_d)
+        pdf.set_font("Helvetica", "I", 8)
+        pdf.set_text_color(90, 90, 90)
+        factor = meta.get("factor")
+        pdf.multi_cell(0, 4.5, new_x="LMARGIN", new_y="NEXT", text=_latin1(
+            f"Unidad detectada del dato mensual de la API: {meta.get('unidad', '-')}"
+            + ("" if factor is None else f" (relación con el total diario de los miembros: {factor:.2f}).")
+        ))
+        pdf.set_text_color(20, 20, 20)
+    else:
+        pdf.set_font("Helvetica", "I", 9)
+        pdf.multi_cell(0, 5, new_x="LMARGIN", new_y="NEXT", text=_latin1(
+            meta.get("mensaje") or "Diagnóstico no disponible para esta corrida."))
+    pdf.ln(3)
+
     pdf.set_font("Helvetica", "I", 8)
     pdf.set_text_color(110, 110, 110)
     pdf.multi_cell(0, 4.5, new_x="LMARGIN", new_y="NEXT", text= _latin1(
-        "Nota: los pronósticos estacionales son probabilísticos por naturaleza y no bias-corregidos "
-        "a escala local; deben interpretarse como orientación de anomalía de área (36 km) y "
-        "complementarse con monitoreo oficial de SENAMHI/ENFEN antes de decisiones operativas."
+        "Nota: los pronósticos estacionales son probabilísticos por naturaleza y aún no están "
+        "corregidos por sesgo a escala local; representan una celda de ~36 km (SEAS5) frente a "
+        "una de ~25 km (ERA5), que puede incluir laderas o mar además del sitio. Deben "
+        "complementarse con el monitoreo oficial de SENAMHI/ENFEN antes de decisiones operativas."
     ))
     pdf.ln(2)
     pdf.multi_cell(0, 4.5, new_x="LMARGIN", new_y="NEXT", text= _latin1(
@@ -1666,52 +2003,90 @@ def clasificar_amenaza_mensual(prob):
     return ("🟢", "bajo", COLOR_OK)
 
 
-def narrar_temporada(df_temp):
-    """Construye, mes a mes, una explicación en lenguaje claro del gráfico de amenaza.
+def _num(v):
+    """Float o None (acepta NaN/None)."""
+    if v is None:
+        return None
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return f if np.isfinite(f) else None
 
-    Lee los valores reales de `df_temporada` (probabilidad, normal y umbral P80 de cada
-    mes) y devuelve una lista de líneas listas para renderizar con st.markdown. La idea
-    es que un lector no técnico entienda, mes por mes, qué está diciendo la curva.
+
+def _texto_mes(fila, md=False):
+    """Narrativa de un mes, compartida por la pantalla (md=True) y el PDF.
+
+    Devuelve (nivel, encabezado, cuerpo) con nivel en
+    {"CRÍTICA", "VIGILANCIA", "BAJA", "SIN DATO"}.
     """
-    lineas = []
-    for fila in df_temp.itertuples(index=False):
-        icono, _, _ = clasificar_amenaza_mensual(fila.prob)
-        normal_txt = f"{fila.normal:.1f} mm" if pd.notna(fila.normal) else "s/d"
-        p80_txt = f"{fila.p80:.1f} mm" if pd.notna(fila.p80) else "s/d"
-        sin_dato = fila.prob is None or pd.isna(fila.prob)
+    b = (lambda t: f"**{t}**") if md else (lambda t: t)
+    g = fila.get
+    prob = _num(g("prob"))
+    normal, p80, p90 = _num(g("normal")), _num(g("p80")), _num(g("p90"))
+    nivel, _ = _nivel_amenaza_pdf(prob)
+    n = g("n_miembros") or 51
 
-        if sin_dato:
-            lineas.append(
-                f"{icono} **{fila.mes} — sin dato aún.** El mes todavía no entra en el "
-                f"horizonte de pronóstico de SEAS5 (~7 meses); por ahora solo se muestra la "
-                f"climatología de referencia (normal {normal_txt}, umbral extremo {p80_txt}). "
-                "El valor probabilístico se habilitará conforme avance el calendario."
-            )
-            continue
-
-        prob = float(fila.prob)
-        if prob >= UMBRAL_PROBABILIDAD_CRITICA:
-            veredicto = (
-                f"**{prob:.0f}% de los 51 escenarios** del modelo prevén un mes más lluvioso "
-                f"de lo normal, por encima del umbral crítico del "
-                f"{UMBRAL_PROBABILIDAD_CRITICA:.0f}%. **Amenaza CRÍTICA:** es el tipo de mes "
-                "capaz de gatillar inundaciones, huaicos o colmatación sobre el activo."
-            )
-        elif prob >= UMBRAL_PROBABILIDAD_VIGILANCIA:
-            veredicto = (
-                f"**{prob:.0f}% de los escenarios** apuntan a lluvia por encima de lo normal. "
-                f"Todavía por debajo del umbral crítico ({UMBRAL_PROBABILIDAD_CRITICA:.0f}%), "
-                "pero es un mes de **VIGILANCIA:** conviene seguir de cerca los comunicados de ENFEN."
-            )
-        else:
-            veredicto = (
-                f"Solo **{prob:.0f}% de los escenarios** superan el umbral de lluvia extrema. "
-                "**Amenaza BAJA:** la mayor parte del ensamble se mantiene dentro de lo normal."
-            )
-        lineas.append(
-            f"{icono} **{fila.mes} — {prob:.0f}%.** {veredicto} "
-            f"_(normal {normal_txt}; umbral extremo P{PERCENTIL_EXTREMO} {p80_txt})_"
+    if prob is None:
+        return nivel, f"{g('mes')} - sin dato aún", (
+            "El mes todavía no entra en el horizonte de pronóstico de SEAS5 (~7 meses); por "
+            f"ahora solo se muestra la climatología de referencia (normal {_fmt(normal)} mm; "
+            f"P{PERCENTIL_SEMAFORO} {_fmt(p90)} mm)."
         )
+
+    if nivel == "CRÍTICA":
+        cuerpo = (
+            f"{prob:.0f}% de los {n} escenarios superan el P{PERCENTIL_SEMAFORO} histórico "
+            f"({_fmt(p90)} mm en el mes), un total que en 1991-2020 solo se alcanzó 1 de cada "
+            f"10 años. {b('Amenaza CRÍTICA')} de lluvia mensual fuerte."
+        )
+    elif nivel == "VIGILANCIA":
+        cuerpo = (
+            f"{prob:.0f}% de los escenarios superan el P{PERCENTIL_SEMAFORO} ({_fmt(p90)} mm), "
+            f"aún por debajo del umbral crítico ({UMBRAL_PROBABILIDAD_CRITICA:.0f}%). "
+            f"Mes de {b('VIGILANCIA')}: conviene seguir de cerca los comunicados de ENFEN."
+        )
+    else:
+        cuerpo = (
+            f"Solo {prob:.0f}% de los escenarios superan el P{PERCENTIL_SEMAFORO} "
+            f"({_fmt(p90)} mm). {b('Amenaza BAJA')} de lluvia mensual fuerte."
+        )
+
+    cuerpo += (
+        f" Mediana pronosticada: {_fmt(g('mediana_ens'))} mm frente a una normal de "
+        f"{_fmt(normal)} mm. Señal de mes más lluvioso de lo habitual (> P{PERCENTIL_EXTREMO}, "
+        f"{_fmt(p80)} mm): {_fmt(g('prob_p80'), 0)}%."
+    )
+    if _num(g("prob_ref")) is not None and g("ref_nino_anio"):
+        cuerpo += (f" Supera el mismo mes del Niño {g('ref_nino_anio')} "
+                   f"({_fmt(g('ref_nino_mm'))} mm) en {_fmt(g('prob_ref'), 0)}% de los escenarios.")
+    return nivel, f"{g('mes')} - {nivel} ({prob:.0f}%)", cuerpo
+
+
+def nota_lamina_baja(temporada):
+    """Una sola nota para los meses cuyo P90 es de pocos milímetros (clima muy seco)."""
+    meses = [f["mes"].split(" ")[0].lower() for f in temporada
+             if _num(f.get("p90")) is not None and _num(f.get("p90")) < LAMINA_REFERENCIA_BAJA_MM]
+    if not meses:
+        return None
+    lista = meses[0] if len(meses) == 1 else ", ".join(meses[:-1]) + " y " + meses[-1]
+    return (f"En {lista}, el P{PERCENTIL_SEMAFORO} de este punto equivale a menos de "
+            f"{LAMINA_REFERENCIA_BAJA_MM:.0f} mm en todo el mes. En esos meses la señal describe "
+            "un mes anómalo para un clima muy seco, no necesariamente lluvias intensas: conviene "
+            "leer el porcentaje junto con la mediana pronosticada en milímetros.")
+
+
+def narrar_temporada(df_temp):
+    """Narrativa mes a mes para la pantalla (markdown con íconos del semáforo)."""
+    iconos = {"CRÍTICA": "🔴", "VIGILANCIA": "🟠", "BAJA": "🟢", "SIN DATO": "⚪"}
+    registros = df_temp.to_dict("records")
+    lineas = []
+    for fila in registros:
+        nivel, encabezado, cuerpo = _texto_mes(fila, md=True)
+        lineas.append(f"{iconos[nivel]} **{encabezado}.** {cuerpo}")
+    nota = nota_lamina_baja(registros)
+    if nota:
+        lineas.append(f"ℹ️ _{nota}_")
     return lineas
 
 
@@ -1729,50 +2104,12 @@ def _nivel_amenaza_pdf(prob):
 def narrar_temporada_pdf(temporada):
     """Versión Latin-1 (sin markdown ni emoji) de la narrativa mes a mes para el PDF.
 
-    Recibe la lista de dicts de contexto['temporada'] y devuelve tuplas
-    (color_rgb, texto_plano) listas para renderizar con multi_cell. Es el equivalente
-    impreso de narrar_temporada(), para que el reporte diga lo mismo que la pantalla.
+    Devuelve tuplas (color_rgb, encabezado, cuerpo) con el mismo texto que la pantalla.
     """
     bloques = []
     for fila in temporada:
-        prob = fila.get("prob")
-        normal = fila.get("normal")
-        p80 = fila.get("p80")
-        nivel, color = _nivel_amenaza_pdf(prob)
-        normal_txt = f"{normal:.1f} mm" if (normal is not None and not pd.isna(normal)) else "s/d"
-        p80_txt = f"{p80:.1f} mm" if (p80 is not None and not pd.isna(p80)) else "s/d"
-
-        if nivel == "SIN DATO":
-            texto = (
-                f"{fila['mes']}: sin dato aún. El mes todavía no entra en el horizonte de "
-                f"pronóstico de SEAS5 (~7 meses); por ahora solo se muestra la climatología de "
-                f"referencia (normal {normal_txt}, umbral extremo {p80_txt})."
-            )
-        else:
-            p = float(prob)
-            if nivel == "CRÍTICA":
-                cuerpo = (
-                    f"{p:.0f}% de los 51 escenarios prevén un mes más lluvioso de lo normal, "
-                    f"por encima del umbral crítico del {UMBRAL_PROBABILIDAD_CRITICA:.0f}%. "
-                    "Amenaza CRÍTICA: mes capaz de gatillar inundaciones, huaicos o colmatación "
-                    "sobre el activo."
-                )
-            elif nivel == "VIGILANCIA":
-                cuerpo = (
-                    f"{p:.0f}% de los escenarios apuntan a lluvia por encima de lo normal, aún "
-                    f"por debajo del umbral crítico ({UMBRAL_PROBABILIDAD_CRITICA:.0f}%). Mes de "
-                    "VIGILANCIA: conviene seguir de cerca los comunicados de ENFEN."
-                )
-            else:
-                cuerpo = (
-                    f"solo {p:.0f}% de los escenarios superan el umbral de lluvia extrema. "
-                    "Amenaza BAJA: la mayor parte del ensamble se mantiene dentro de lo normal."
-                )
-            texto = (
-                f"{fila['mes']} ({p:.0f}%): {cuerpo} "
-                f"(normal {normal_txt}; umbral extremo P{PERCENTIL_EXTREMO} {p80_txt})."
-            )
-        bloques.append((color, texto))
+        nivel, encabezado, cuerpo = _texto_mes(fila, md=False)
+        bloques.append((_nivel_amenaza_pdf(_num(fila.get("prob")))[1], encabezado, cuerpo))
     return bloques
 
 
@@ -1883,6 +2220,9 @@ except Exception as e:
         "mes": range(1, 13),
         "normal_mm": [80, 95, 90, 45, 15, 5, 3, 4, 8, 20, 35, 60],
         "p80_mm":   [130, 155, 150, 75, 28, 10, 6, 8, 15, 35, 60, 100],
+        "p90_mm":   [160, 190, 185, 95, 36, 13, 8, 10, 19, 45, 75, 125],
+        "nino9798_mm": [np.nan] * 12,
+        "nino2017_mm": [np.nan] * 12,
     })
     modo_demo = True
 
@@ -1904,14 +2244,28 @@ if "DEMOSTRACIÓN" in modo_datos:
     st.error("🧪 **MODO DEMOSTRACIÓN ACTIVO** — Los datos mostrados son sintéticos y "
              "solo ilustran el funcionamiento de la plataforma.")
 
-# ---- Cálculo probabilístico del mes seleccionado ----
-probabilidad, umbral_p80, normal_mes, ensamble_mes = calcular_probabilidad_excedencia(
-    df_miembros, climatologia, anio_sel, mes_sel
-)
+# ---- Cálculo probabilístico: toda la temporada en una sola pasada ----
+# Cada fila resume un mes: clima ERA5 (normal, P80, P90, referencia Niño) y
+# pronóstico SEAS5 (mediana y P90 del ensamble, probabilidades). Se calcula
+# UNA vez y se reutiliza en gráficos, tablas, narrativa y PDF.
+filas_temporada = [resumen_mes(df_miembros, climatologia, etq, a, m)
+                   for etq, a, m in MESES_EVENTO]
+df_temporada = pd.DataFrame(filas_temporada)
+fila_sel = next(f for f in filas_temporada if f["mes"] == etiqueta_mes)
+
+probabilidad = fila_sel["prob"]            # Semáforo: > P90
+prob_p80_sel = fila_sel["prob_p80"]        # Señal: > P80
+umbral_p80 = fila_sel["p80"]
+umbral_p90 = fila_sel["p90"]
+normal_mes = fila_sel["normal"]
+ensamble_mes = _miembros_del_mes(df_miembros, anio_sel, mes_sel)
 n_miembros = int(ensamble_mes["miembro"].nunique()) if not ensamble_mes.empty else 0
 
-# Estadísticos del ensamble usados en el gráfico comparativo de volumen (Pestaña 3).
-mediana_mes, p90_mes = estadisticos_ensamble(ensamble_mes)
+# Estadísticos del ensamble (gráfico de volumen de la Pestaña 3 y violín).
+mediana_mes, p90_mes = fila_sel["mediana_ens"], fila_sel["p90_ens"]
+
+# Diagnóstico de sesgo SEAS5 vs ERA5 (normal del modelo vs normal del reanálisis).
+df_diag, meta_diag = diagnostico_sesgo(df_miembros, df_anom, climatologia)
 
 # Anomalía (mm/día) del mes seleccionado, si la API la entregó.
 anomalia_sel = None
@@ -1936,13 +2290,6 @@ nivel_riesgo, titulo_riesgo, mensaje_riesgo = evaluar_consecuencias(
     dep_norm, sector_usuario, probabilidad, anomalia_sel
 )
 
-# Serie mes a mes de toda la temporada crítica: se calcula UNA sola vez aquí
-# y se reutiliza en el gráfico de la Pestaña 2 y en la tabla del reporte PDF.
-filas_temporada = []
-for etq, a, m in MESES_EVENTO:
-    p_mes, u_mes, nrm_mes, _ = calcular_probabilidad_excedencia(df_miembros, climatologia, a, m)
-    filas_temporada.append({"mes": etq, "prob": p_mes, "normal": nrm_mes, "p80": u_mes})
-df_temporada = pd.DataFrame(filas_temporada)
 
 # =============================================================================
 # 9. PANEL PRINCIPAL — PESTAÑAS
@@ -1977,7 +2324,7 @@ with tab_geo:
         f"Mapa de calor: señal de anomalía de lluvia de SEAS5 para **{etiqueta_mes}** "
         "(índice donde 50 = normal climatológica). Tonos cian = más lluvioso de lo "
         "normal; tonos marrones = más seco. La probabilidad de excedencia rigurosa "
-        "contra el umbral P80 histórico está en la pestaña de Análisis Probabilístico, "
+        "contra los umbrales P80 y P90 históricos está en la pestaña de Análisis Probabilístico, "
         "calculada en el punto exacto del activo."
     )
 
@@ -2053,31 +2400,56 @@ with tab_prob:
         st.subheader("Climatología de referencia (a la espera del horizonte SEAS5)")
     else:
         m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Probabilidad de lluvia extrema", f"{probabilidad:.1f}%",
-                  help=f"% de miembros del ensamble por encima del percentil {PERCENTIL_EXTREMO} histórico")
-        m2.metric(f"Umbral P{PERCENTIL_EXTREMO} (ERA5)", f"{umbral_p80:.1f} mm")
-        m3.metric("Normal climatológica", f"{normal_mes:.1f} mm")
+        m1.metric(f"Semáforo: prob. > P{PERCENTIL_SEMAFORO}", f"{probabilidad:.1f}%",
+                  help=f"% de miembros del ensamble cuyo total mensual supera el percentil "
+                       f"{PERCENTIL_SEMAFORO} histórico (lluvia mensual fuerte, 1 de cada 10 años)")
+        m2.metric(f"Señal: prob. > P{PERCENTIL_EXTREMO}", f"{prob_p80_sel:.1f}%",
+                  help=f"% de miembros por encima del percentil {PERCENTIL_EXTREMO} "
+                       "(mes más lluvioso de lo habitual, 2 de cada 10 años)")
+        m3.metric("Supera el mes Niño de referencia",
+                  "—" if fila_sel["prob_ref"] is None else f"{fila_sel['prob_ref']:.1f}%",
+                  help="% de miembros que superan el total observado en ese mes durante "
+                       "El Niño 1997-98 o El Niño Costero 2017 (el mayor de ambos)")
         m4.metric("Miembros del ensamble", f"{n_miembros}")
+
+        n1, n2, n3, n4 = st.columns(4)
+        n1.metric("Normal climatológica", f"{normal_mes:.1f} mm")
+        n2.metric(f"Umbral P{PERCENTIL_EXTREMO} / P{PERCENTIL_SEMAFORO}",
+                  f"{umbral_p80:.1f} / {umbral_p90:.1f} mm")
+        n3.metric("Mediana del ensamble", f"{mediana_mes:.1f} mm",
+                  delta=f"{mediana_mes - normal_mes:+.1f} mm vs normal")
+        n4.metric("Mes Niño de referencia",
+                  "—" if not fila_sel["ref_nino_anio"]
+                  else f"{fila_sel['ref_nino_mm']:.1f} mm ({fila_sel['ref_nino_anio']})")
 
         if aviso_ensamble:
             st.info("ℹ️ " + aviso_ensamble)
 
     # Curva de probabilidad a lo largo de toda la temporada crítica.
-    # (df_temporada ya fue calculado una sola vez en la orquestación principal.)
     fig_temp = go.Figure()
     fig_temp.add_trace(go.Bar(
         x=df_temporada["mes"], y=df_temporada["normal"],
         name="Normal climatológica (mm)", marker_color=COLOR_BARRA_NORMAL, opacity=0.8,
     ))
+    con_mediana = df_temporada.dropna(subset=["mediana_ens"])
+    fig_temp.add_trace(go.Bar(
+        x=con_mediana["mes"], y=con_mediana["mediana_ens"],
+        name="Mediana del ensamble (mm)", marker_color=COLOR_ACENTO, opacity=0.55,
+    ))
     fig_temp.add_trace(go.Scatter(
-        x=df_temporada["mes"], y=df_temporada["p80"],
-        name=f"Umbral P{PERCENTIL_EXTREMO} (mm)", mode="lines+markers",
+        x=df_temporada["mes"], y=df_temporada["p90"],
+        name=f"Umbral P{PERCENTIL_SEMAFORO} (mm)", mode="lines+markers",
         line=dict(color=COLOR_ADVERTENCIA, dash="dash"),
     ))
     con_prob = df_temporada.dropna(subset=["prob"])
     fig_temp.add_trace(go.Scatter(
+        x=con_prob["mes"], y=con_prob["prob_p80"],
+        name=f"Señal > P{PERCENTIL_EXTREMO} (%)", mode="lines+markers",
+        line=dict(color=COLOR_TEXTO_TENUE, width=1.5, dash="dot"), yaxis="y2",
+    ))
+    fig_temp.add_trace(go.Scatter(
         x=con_prob["mes"], y=con_prob["prob"],
-        name="Prob. de excedencia (%)", mode="lines+markers+text",
+        name=f"Semáforo > P{PERCENTIL_SEMAFORO} (%)", mode="lines+markers+text",
         text=[f"{v:.0f}%" for v in con_prob["prob"]], textposition="top center",
         textfont=dict(color=COLOR_ACENTO),
         line=dict(color=COLOR_ACENTO, width=3), yaxis="y2",
@@ -2088,9 +2460,9 @@ with tab_prob:
                        annotation_font_color=COLOR_ALERTA)
     fig_temp.update_layout(
         template="plotly_dark", paper_bgcolor=COLOR_FONDO, plot_bgcolor=COLOR_LIENZO,
-        height=470,
+        height=490, barmode="group",
         title=dict(
-            text="Temporada crítica Oct 2026 – Abr 2027: clima de referencia vs. señal probabilística",
+            text="Temporada Oct 2026 – Abr 2027: clima de referencia, magnitud pronosticada y probabilidad",
             x=0.02, xanchor="left", y=0.97, yanchor="top",
             font=dict(color="#FFFFFF", size=15),
         ),
@@ -2098,32 +2470,48 @@ with tab_prob:
                     font=dict(color=COLOR_TEXTO)),
         yaxis=dict(title="Precipitación mensual (mm)"),
         yaxis2=dict(title="Probabilidad (%)", overlaying="y", side="right",
-                    range=[0, 100], showgrid=False),
-        margin=dict(t=95, b=10, l=10, r=10),
+                    range=[0, 105], showgrid=False),
+        margin=dict(t=110, b=10, l=10, r=10),
     )
     estilo_grafico(fig_temp)
     st.plotly_chart(fig_temp, width='stretch')
 
+    # --- Tabla completa de la temporada ---
+    st.markdown("#### 📋 Tabla de la temporada")
+    st.dataframe(pd.DataFrame({
+        "Mes": df_temporada["mes"],
+        "Normal (mm)": df_temporada["normal"].map(lambda v: _fmt(v)),
+        f"P{PERCENTIL_EXTREMO} (mm)": df_temporada["p80"].map(lambda v: _fmt(v)),
+        f"P{PERCENTIL_SEMAFORO} (mm)": df_temporada["p90"].map(lambda v: _fmt(v)),
+        "Niño ref. (mm, año)": [
+            "—" if not f["ref_nino_anio"] else f"{_fmt(f['ref_nino_mm'])} ({f['ref_nino_anio']})"
+            for f in filas_temporada],
+        "Mediana ens. (mm)": df_temporada["mediana_ens"].map(lambda v: _fmt(v)),
+        "P90 ens. (mm)": df_temporada["p90_ens"].map(lambda v: _fmt(v)),
+        f"> P{PERCENTIL_EXTREMO} (%)": df_temporada["prob_p80"].map(lambda v: _fmt(v, 0)),
+        f"> P{PERCENTIL_SEMAFORO} semáforo (%)": df_temporada["prob"].map(lambda v: _fmt(v, 0)),
+        "> Niño ref. (%)": df_temporada["prob_ref"].map(lambda v: _fmt(v, 0)),
+    }), hide_index=True, width='stretch')
+
     # --- Lectura didáctica del gráfico, mes a mes ---
     st.markdown("#### 📖 Cómo leer este gráfico, mes a mes")
     st.markdown(
-        f"En una frase: la **línea de probabilidad** indica, para cada mes, qué porcentaje de los "
-        f"**51 escenarios** del modelo SEAS5 prevé lluvias por encima de lo normal "
-        f"(el umbral P{PERCENTIL_EXTREMO} del clima 1991–2020 en el punto exacto de la central). "
-        f"Cuanto más alta esté esa línea —y más cerca o por encima de la **línea roja del "
-        f"{UMBRAL_PROBABILIDAD_CRITICA:.0f}%**—, mayor es la amenaza de lluvia extrema. "
-        f"Las **barras** son la lluvia típica del mes y la **línea ámbar** marca a partir de "
-        f"cuánta lluvia se considera \"extrema\"."
+        f"La **línea gruesa** indica, para cada mes, qué porcentaje de los **51 escenarios** "
+        f"del modelo SEAS5 supera el **P{PERCENTIL_SEMAFORO}** del clima 1991–2020 en el punto "
+        f"(un total mensual que solo se alcanza 1 de cada 10 años). Esa línea gobierna el "
+        f"semáforo: por encima de la **línea roja del {UMBRAL_PROBABILIDAD_CRITICA:.0f}%** el mes "
+        f"es crítico. La **línea punteada fina** es la señal más débil (> P{PERCENTIL_EXTREMO}, "
+        "mes más lluvioso de lo habitual). Las **barras** comparan la lluvia típica del mes con "
+        "la **mediana pronosticada**: así se ve cuántos milímetros hay detrás de cada porcentaje."
     )
     for _linea in narrar_temporada(df_temporada):
         st.markdown(_linea)
     st.caption(
-        f"Semáforo de amenaza: 🔴 crítico (≥ {UMBRAL_PROBABILIDAD_CRITICA:.0f}%) · "
-        f"🟠 vigilancia ({UMBRAL_PROBABILIDAD_VIGILANCIA:.0f}–{UMBRAL_PROBABILIDAD_CRITICA:.0f}%) · "
-        f"🟢 bajo (< {UMBRAL_PROBABILIDAD_VIGILANCIA:.0f}%). "
-        "La probabilidad es la fracción de miembros del ensamble cuyo total mensual supera el "
-        "umbral extremo; se interpreta como anomalía de área (~36 km) y no reemplaza los "
-        "comunicados oficiales de ENFEN/SENAMHI."
+        f"Semáforo (probabilidad > P{PERCENTIL_SEMAFORO}): 🔴 crítico (≥ "
+        f"{UMBRAL_PROBABILIDAD_CRITICA:.0f}%) · 🟠 vigilancia ({UMBRAL_PROBABILIDAD_VIGILANCIA:.0f}–"
+        f"{UMBRAL_PROBABILIDAD_CRITICA:.0f}%) · 🟢 bajo (< {UMBRAL_PROBABILIDAD_VIGILANCIA:.0f}%). "
+        "Se interpreta como anomalía de área (~36 km), aún sin corrección de sesgo local, y no "
+        "reemplaza los comunicados oficiales de ENFEN/SENAMHI."
     )
 
 # ---------------------------------------------------------------- Pestaña 3
@@ -2190,7 +2578,7 @@ with tab_riesgo:
 
     barras = [
         ("Normal climatológica", normal_mes, COLOR_BARRA_NORMAL, "referencia"),
-        (f"Umbral P{PERCENTIL_EXTREMO} histórico", umbral_p80, COLOR_ADVERTENCIA, "referencia"),
+        (f"Umbral P{PERCENTIL_SEMAFORO} histórico", umbral_p90, COLOR_ADVERTENCIA, "referencia"),
         ("Mediana del ensamble", mediana_mes, COLOR_ACENTO, "pronóstico"),
         ("P90 del ensamble", p90_mes, COLOR_ALERTA, "pronóstico"),
     ]
@@ -2265,11 +2653,13 @@ with tab_riesgo:
     st.markdown("#### Parámetros que activaron esta evaluación")
     st.dataframe(pd.DataFrame({
         "Parámetro": ["Departamento", "Grupo climático", "Sector", "Mes",
-                      "Probabilidad de excedencia P80", "Nivel de semáforo",
+                      f"Probabilidad > P{PERCENTIL_SEMAFORO} (semáforo)",
+                      f"Probabilidad > P{PERCENTIL_EXTREMO} (señal)", "Nivel de semáforo",
                       "Área local de aporte",
                       "Anomalía SEAS5 (mm/día)", "Umbral crítico configurado"],
         "Valor": [dep_nombre, grupo, sector_usuario, etiqueta_mes,
                   "—" if probabilidad is None else f"{probabilidad:.1f}%",
+                  "—" if prob_p80_sel is None else f"{prob_p80_sel:.1f}%",
                   ETIQUETA_NIVEL[nivel_mes],
                   f"{area_aporte:,.0f} m²",
                   "—" if anomalia_sel is None else f"{anomalia_sel:+.2f}",
@@ -2296,9 +2686,20 @@ with tab_ciencia:
             marker=dict(size=5, color="#F0CDEA"),
             name=f"{n_miembros} miembros",
         ))
+        fig_violin.add_hline(y=umbral_p90, line_dash="dash", line_color=COLOR_ALERTA,
+                             annotation_text=f"P{PERCENTIL_SEMAFORO} histórico = {umbral_p90:.1f} mm",
+                             annotation_font_color=COLOR_ALERTA)
         fig_violin.add_hline(y=umbral_p80, line_dash="dash", line_color=COLOR_ADVERTENCIA,
-                             annotation_text=f"P{PERCENTIL_EXTREMO} histórico = {umbral_p80:.0f} mm",
+                             annotation_text=f"P{PERCENTIL_EXTREMO} histórico = {umbral_p80:.1f} mm",
+                             annotation_position="bottom right",
                              annotation_font_color=COLOR_ADVERTENCIA)
+        if fila_sel["ref_nino_anio"]:
+            fig_violin.add_hline(y=fila_sel["ref_nino_mm"], line_dash="longdash",
+                                 line_color="#7FB3FF",
+                                 annotation_text=(f"Niño {fila_sel['ref_nino_anio']} = "
+                                                  f"{fila_sel['ref_nino_mm']:.1f} mm"),
+                                 annotation_position="top left",
+                                 annotation_font_color="#7FB3FF")
         fig_violin.add_hline(y=normal_mes, line_dash="dot", line_color=COLOR_OK,
                              annotation_text=f"Normal = {normal_mes:.0f} mm",
                              annotation_font_color=COLOR_OK)
@@ -2320,12 +2721,16 @@ lluvia: donde es más ancho, más probable; donde es angosto, menos probable. *L
 ES la distribución de probabilidad.*
 - **La caja central** marca el rango intercuartílico (del 25 % al 75 % de los miembros) y
 la línea de la media; resume dónde se concentra el pronóstico.
-- **Línea ámbar punteada (P{PERCENTIL_EXTREMO} = {umbral_p80:.0f} mm):** el umbral de lluvia
-"extrema" según 30 años de ERA5. **La probabilidad de amenaza es simplemente qué fracción
-de los puntos cae por encima de esta línea.**
+- **Línea roja punteada (P{PERCENTIL_SEMAFORO} = {umbral_p90:.1f} mm):** el total mensual que
+en 30 años de ERA5 solo se superó 1 de cada 10 años. **La probabilidad del semáforo es
+simplemente qué fracción de los puntos cae por encima de esta línea.**
+- **Línea ámbar punteada (P{PERCENTIL_EXTREMO} = {umbral_p80:.1f} mm):** señal más débil, mes
+más lluvioso de lo habitual (2 de cada 10 años).
+- **Línea azul (si aparece):** total observado en ese mismo mes durante El Niño 1997-98 o
+El Niño Costero 2017, como referencia de lo que ya ocurrió.
 - **Línea verde punteada (Normal = {normal_mes:.0f} mm):** la lluvia típica del mes.
 
-En términos operativos: mientras más masa del violín quede **por encima** de la línea ámbar,
+En términos operativos: mientras más masa del violín quede **por encima** de la línea roja,
 mayor es la probabilidad de que {etiqueta_mes} traiga lluvias capaces de gatillar los modos
 de falla de tu activo. Un violín angosto = pronóstico confiable; uno muy ancho = alta
 incertidumbre, que es en sí misma información para la gestión del riesgo.
@@ -2342,29 +2747,63 @@ Esta plataforma cuantifica la **amenaza** de forma probabilística y la cruza co
 
 **2. Normal climatológica.** Reanálisis **ERA5** del programa Copernicus (Unión Europea),
 periodo de referencia **1991-2020** (estándar OMM), agregado a totales mensuales en el
-píxel del activo. El umbral de "lluvia extrema" es el **percentil {PERCENTIL_EXTREMO}**
-de la distribución empírica de 30 años de cada mes calendario — equivalente conceptual
-del mapeo de cuantiles usado para corrección de sesgo en estudios CMIP6.
+píxel del activo. Se usan dos umbrales de la distribución empírica de 30 años de cada mes:
+el **percentil {PERCENTIL_EXTREMO}** como *señal* de mes más lluvioso de lo habitual y el
+**percentil {PERCENTIL_SEMAFORO}** como umbral del *semáforo* (lluvia mensual fuerte; el
+SENAMHI/ENFEN usa el P90 para "lluvias fuertes" a escala diaria). Como referencia histórica
+se muestra el total del mismo mes en El Niño 1997-98 y El Niño Costero 2017.
 
 **3. Pronóstico estacional.** **ECMWF SEAS5**, sistema operativo de **51 miembros**
 (resolución ~36 km, actualización mensual el día 5, horizonte 7 meses), distribuido como
 dato abierto a través de la Seasonal Forecast API de Open-Meteo. La probabilidad reportada
 es la **frecuencia relativa de excedencia** del umbral dentro del ensamble:
-`P = #(miembros > P{PERCENTIL_EXTREMO}) / N × 100`.
+`P = #(miembros > umbral) / N × 100`, calculada para el P{PERCENTIL_EXTREMO}, el
+P{PERCENTIL_SEMAFORO} y la referencia Niño. Se reporta además la **mediana y el P90 del
+ensamble en mm**, para que cada porcentaje vaya acompañado de su magnitud.
 
 **4. Contexto de escenarios.** Los modelos globales **CMIP6** del IPCC y sus trayectorias
 SSP enmarcan la no-estacionariedad del clima: la variabilidad ENOS se superpone al
 calentamiento antropogénico, por lo que la climatología histórica se usa como referencia
 de umbral y no como pronóstico.
 
-**5. Limitaciones declaradas.** SEAS5 no está bias-corregido a escala local (interpretar
-como anomalía de área); los meses tardíos del verano entran al horizonte progresivamente;
+**5. Limitaciones declaradas.** SEAS5 aún no está corregido por sesgo a escala local
+(interpretar como anomalía de área); el diagnóstico de sesgo de esta pestaña muestra cuánto
+difiere la normal del modelo de la de ERA5 en el punto. Los meses tardíos del verano entran
+al horizonte progresivamente;
 la matriz de consecuencias es paramétrica (región × sector) y debe calibrarse con las
 curvas de daño específicas de cada planta.
 
 **6. Geoespacial.** Límites ADM1 de **geoBoundaries** (licencia abierta), intersección
 punto-en-polígono con Shapely/GEOS y buffer métrico en proyección UTM local.
 """)
+
+    st.subheader("🧪 Diagnóstico de sesgo del modelo en el punto")
+    st.markdown(
+        "Compara la **normal mensual del propio SEAS5** (calculada por el ECMWF con sus "
+        "pronósticos retrospectivos: media del ensamble menos su anomalía) con la **normal "
+        "ERA5** del punto. Si el modelo \"cree\" que el lugar es más lluvioso de lo que registra "
+        f"el reanálisis (razón > {RAZON_SESGO_HUMEDO:.1f}), las probabilidades de superar "
+        "umbrales ERA5 quedan infladas, sobre todo en la costa hiperárida, donde los umbrales "
+        "son de pocos milímetros. Todavía **no se aplica corrección**: este cuadro sirve para "
+        "decidir si hace falta y de qué tamaño."
+    )
+    if df_diag.empty:
+        st.info("ℹ️ " + (meta_diag.get("mensaje") or "Diagnóstico no disponible para esta corrida."))
+    else:
+        st.dataframe(pd.DataFrame({
+            "Mes": df_diag["mes"],
+            "Normal ERA5 (mm)": df_diag["normal_era5"].map(lambda v: _fmt(v)),
+            "Normal SEAS5 (mm)": df_diag["normal_seas5"].map(lambda v: _fmt(v)),
+            "Razón SEAS5/ERA5": df_diag["razon"].map(lambda v: _fmt(v, 2)),
+            "Lectura": df_diag["lectura"],
+        }), hide_index=True, width='stretch')
+        st.caption(
+            f"Unidad detectada del dato mensual de la API: **{meta_diag.get('unidad')}** "
+            f"(relación con el total de los miembros diarios: {meta_diag.get('factor', 0):.2f}; "
+            "≈ días del mes indica mm/día, ≈ 1 indica mm/mes). Lectura orientativa: "
+            f"> {RAZON_SESGO_HUMEDO:.1f} modelo más húmedo · < {RAZON_SESGO_SECO:.2f} modelo más "
+            "seco · intermedio consistente."
+        )
 
     st.subheader("📄 Reporte ejecutivo descargable")
     if fuera_de_horizonte:
@@ -2374,10 +2813,12 @@ punto-en-polígono con Shapely/GEOS y buffer métrico en proyección UTM local.
         "lat": lat_usuario, "lon": lon_usuario, "departamento": dep_nombre,
         "sector": sector_usuario, "mes_etiqueta": etiqueta_mes,
         "modo_datos": modo_datos,
-        "probabilidad": probabilidad if probabilidad is not None else 0.0,
-        "umbral": umbral_p80, "normal": normal_mes, "n_miembros": n_miembros,
+        "n_miembros": n_miembros if n_miembros else 51,
+        "sel": fila_sel,
         "riesgo_titulo": titulo_riesgo, "riesgo_mensaje": mensaje_riesgo,
-        "temporada": df_temporada.to_dict("records"),
+        "temporada": filas_temporada,
+        "diagnostico": df_diag.to_dict("records") if not df_diag.empty else [],
+        "diag_meta": meta_diag,
     }
     try:
         pdf_bytes = generar_pdf(contexto_pdf)
