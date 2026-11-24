@@ -19,6 +19,10 @@
 #  "lado seguro" para factores extremos; sectores Refinería y Estación de Gas;
 #  mes en curso distinguido de "fuera de horizonte"; consecuencias por nivel.
 #
+#  Cambios nov-2026: ventana de observación corrida a dic 2026 – may 2027
+#  (octubre y noviembre ya transcurrieron), referencia Niño extendida a mayo
+#  (1998 y 2017), contexto ENFEN N°20-2026 y mes por defecto = primer mes futuro.
+#
 #  Ejecución local:
 #    pip install streamlit geopandas shapely plotly requests pandas numpy fpdf2
 #    streamlit run app.py
@@ -202,15 +206,27 @@ st.markdown(
 
 # Meses restringidos estrictamente al evento crítico confirmado por el ENFEN.
 # Formato interno: (etiqueta_visible, año, número_de_mes)
+# Ventana de observación (nov-2026): de diciembre 2026 a mayo 2027. Octubre y
+# noviembre se retiraron porque ya transcurrieron; mayo entra porque el ENFEN
+# (Comunicado N°20-2026) prevé que El Niño Costero se debilite recién hacia julio.
+# Para mover la ventana basta con editar esta lista: títulos, tablas y PDF
+# toman de aquí el rango de la temporada.
 MESES_EVENTO = [
-    ("Octubre 2026", 2026, 10),
-    ("Noviembre 2026", 2026, 11),
     ("Diciembre 2026", 2026, 12),
     ("Enero 2027", 2027, 1),
     ("Febrero 2027", 2027, 2),
     ("Marzo 2027", 2027, 3),
     ("Abril 2027", 2027, 4),
+    ("Mayo 2027", 2027, 5),
 ]
+
+_MES_ABREV = {1: "Ene", 2: "Feb", 3: "Mar", 4: "Abr", 5: "May", 6: "Jun",
+              7: "Jul", 8: "Ago", 9: "Set", 10: "Oct", 11: "Nov", 12: "Dic"}
+# Rango visible de la temporada, p. ej. "Dic 2026 – May 2027".
+RANGO_TEMPORADA = (
+    f"{_MES_ABREV[MESES_EVENTO[0][2]]} {MESES_EVENTO[0][1]} – "
+    f"{_MES_ABREV[MESES_EVENTO[-1][2]]} {MESES_EVENTO[-1][1]}"
+)
 
 SECTOR_REFINERIA = "Refinería / Planta de Hidrocarburos"
 SECTOR_GAS = "Estación de Gas Natural (City Gate / Ducto)"
@@ -347,12 +363,14 @@ RADIO_BUFFER_KM = 10.0              # Zona de operación local alrededor de la p
 # intensas. Se agrega una nota explicativa en la narrativa (parámetro calibrable).
 LAMINA_REFERENCIA_BAJA_MM = 10.0
 
-# Años Niño de referencia (total mensual ERA5 en el punto del activo):
-#  - El Niño 1997-98: octubre 1997 a abril 1998.
-#  - El Niño Costero 2017: enero a abril 2017.
+# Años Niño de referencia (total mensual ERA5 en el punto del activo), en el
+# tramo de cada evento que coincide con la ventana de observación:
+#  - El Niño 1997-98: diciembre 1997 a mayo 1998.
+#  - El Niño Costero 2017: enero a mayo 2017 (según el ICEN, el evento
+#    finalizó durante mayo 2017).
 # Para cada mes se toma el mayor de los disponibles como "referencia Niño".
-MESES_NINO_9798 = {10: 1997, 11: 1997, 12: 1997, 1: 1998, 2: 1998, 3: 1998, 4: 1998}
-MESES_NINO_2017 = {1: 2017, 2: 2017, 3: 2017, 4: 2017}
+MESES_NINO_9798 = {12: 1997, 1: 1998, 2: 1998, 3: 1998, 4: 1998, 5: 1998}
+MESES_NINO_2017 = {1: 2017, 2: 2017, 3: 2017, 4: 2017, 5: 2017}
 
 # Diagnóstico de sesgo: razón entre la normal del propio SEAS5 (hindcasts) y la
 # normal ERA5. Fuera de este rango se considera que el modelo tiene sesgo.
@@ -380,24 +398,30 @@ VERSION_ESTADO = "Versión BETA 1.1 — herramienta en desarrollo"
 
 # Contexto oficial hardcodeado según especificación del proyecto.
 # NOTA DE MANTENIMIENTO: actualizar este bloque con cada nuevo comunicado ENFEN.
-#   Vigente: Comunicado N°17-2026 (28/09/2026). Próximo: 15/10/2026.
+#   Vigente: Comunicado N°20-2026 (13/11/2026). Próximo: 30/11/2026.
+#   Redactado desde la cobertura de prensa del comunicado (Gestión, Correo,
+#   14/11/2026); validar contra el PDF oficial del ENFEN.
 TEXTO_ENFEN = (
-    "<b>Contexto Oficial ENFEN (Comunicado N°17-2026, 28/09/2026):</b> "
+    "<b>Contexto Oficial ENFEN (Comunicado N°20-2026, 13/11/2026):</b> "
     "Alerta de El Niño Costero vigente. El Niño Costero (región Niño 1+2) se "
-    "mantendría con magnitud <b>extraordinaria</b> hasta enero de 2027, "
-    "debilitándose hacia el otoño; El Niño en la región Niño 3.4 se mantendría "
-    "<b>muy fuerte</b> hasta enero de 2027. Para octubre-diciembre se prevén "
-    "lluvias superiores a lo normal en la costa norte y central, y para el "
-    "verano 2027, en la costa norte, costa central y sierra norte occidental."
+    "mantendría con magnitud <b>extraordinaria</b> hasta febrero de 2027, "
+    "debilitándose progresivamente hasta julio de 2027; El Niño en la región "
+    "Niño 3.4 se mantendría <b>muy fuerte</b> hasta febrero de 2027. Para el "
+    "verano 2027 se prevén lluvias superiores a lo normal en toda la costa y en la "
+    "sierra norte y central occidental, con mayor frecuencia e intensidad en la "
+    "costa norte. Desde enero de 2027, los caudales sobre lo normal se extenderían "
+    "a los ríos Chillón, Rímac, Lurín, Pisco e Ica."
 )
 TEXTO_ENFEN_PDF = (
-    "Contexto Oficial ENFEN (Comunicado N°17-2026, 28/09/2026): Alerta de El Niño "
+    "Contexto Oficial ENFEN (Comunicado N°20-2026, 13/11/2026): Alerta de El Niño "
     "Costero vigente. El Niño Costero (región Niño 1+2) se mantendría con magnitud "
-    "extraordinaria hasta enero de 2027, debilitándose hacia el otoño; El Niño en la "
-    "región Niño 3.4 se mantendría muy fuerte hasta enero de 2027. Para "
-    "octubre-diciembre se prevén lluvias superiores a lo normal en la costa norte y "
-    "central, y para el verano 2027, en la costa norte, costa central y sierra norte "
-    "occidental. Próximo comunicado oficial: 15/10/2026."
+    "extraordinaria hasta febrero de 2027, debilitándose progresivamente hasta julio "
+    "de 2027; El Niño en la región Niño 3.4 se mantendría muy fuerte hasta febrero de "
+    "2027. Para el verano 2027 se prevén lluvias superiores a lo normal en toda la "
+    "costa y en la sierra norte y central occidental, con mayor frecuencia e "
+    "intensidad en la costa norte. Desde enero de 2027, los caudales sobre lo normal "
+    "se extenderían a los ríos Chillón, Rímac, Lurín, Pisco e Ica. Próximo "
+    "comunicado oficial: 30/11/2026."
 )
 
 
@@ -564,8 +588,9 @@ def obtener_probabilidad_grilla(puntos: tuple, anio: int, mes: int) -> pd.DataFr
             "monthly": "precipitation_mean,precipitation_anomaly",
             "models": "ecmwf_seas5", "timezone": "GMT",
             "forecast_days": 215,   # Fuerza el horizonte completo (~7 meses) para
-                                    # que el dato mensual alcance enero/febrero y no
-                                    # se corte en diciembre por el default del API.
+                                    # que el dato mensual alcance el final de la
+                                    # temporada (mayo) y no se corte por el default
+                                    # del API.
         }
         try:
             rm = requests.get(URL_API_ESTACIONAL, params=params_m, timeout=120)
@@ -619,7 +644,8 @@ def generar_grilla_prob_demo(puntos: list, mes: int, semilla: int) -> pd.DataFra
     modulado por el ciclo estacional del verano costero. NO usar para decisiones.
     """
     rng = np.random.default_rng(semilla)
-    factor_mes = {10: 0.55, 11: 0.65, 12: 0.80, 1: 0.95, 2: 1.00, 3: 0.95, 4: 0.70}.get(mes, 0.6)
+    factor_mes = {10: 0.55, 11: 0.65, 12: 0.80, 1: 0.95, 2: 1.00, 3: 0.95, 4: 0.70,
+                  5: 0.50}.get(mes, 0.6)
     registros = []
     for lat, lon in puntos:
         nucleo_humedo = 88.0 * np.exp(-(((lat + 5.5) ** 2) + ((lon + 80.3) ** 2)) / 18.0)
@@ -1065,7 +1091,7 @@ def obtener_pronostico_seas5(lat: float, lon: float):
             "models": "ecmwf_seas5",
             "timezone": "auto",
             "forecast_days": 215,   # Igual que en la grilla: sin esto el dato
-                                    # mensual se corta antes de enero/febrero.
+                                    # mensual se corta antes del final de la temporada.
         }
         r2 = requests.get(URL_API_ESTACIONAL, params=params_mensual, timeout=120)
         r2.raise_for_status()
@@ -2056,7 +2082,7 @@ def generar_pdf(contexto: dict) -> bytes:
     # --- 3. Panorama de la temporada: clima de referencia + pronóstico ---
     temporada = contexto.get("temporada", [])
     pdf.set_font("Helvetica", "B", 11)
-    pdf.cell(0, 7, _latin1("3. Panorama mensual de la temporada (Oct 2026 - Abr 2027)"), new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 7, _latin1(f"3. Panorama mensual de la temporada ({RANGO_TEMPORADA})"), new_x="LMARGIN", new_y="NEXT")
 
     pdf.set_font("Helvetica", "B", 9)
     pdf.cell(0, 6, _latin1("3.a Clima de referencia en el punto (ERA5 1991-2020, mm/mes)"),
@@ -2171,8 +2197,8 @@ def generar_pdf(contexto: dict) -> bytes:
         "distribución empírica de totales mensuales ERA5 1991-2020 en el punto; probabilidad = fracción "
         "de miembros del ensamble que superan cada umbral. El P90 sigue el criterio SENAMHI/ENFEN de "
         "'lluvias fuertes', aplicado aquí al total mensual.",
-        "Referencia Niño: total mensual ERA5 en el mismo mes de El Niño 1997-98 (oct 1997 - abr 1998) "
-        "y de El Niño Costero 2017 (ene - abr 2017); se usa el mayor de ambos.",
+        "Referencia Niño: total mensual ERA5 en el mismo mes de El Niño 1997-98 (dic 1997 - may 1998) "
+        "y de El Niño Costero 2017 (ene - may 2017); se usa el mayor de ambos.",
         "Corrección de sesgo: escalado lineal mensual (cada miembro x normal ERA5 / normal SEAS5), "
         f"con regla de lado seguro fuera del rango {FACTOR_CORRECCION_MIN:.1f}-"
         f"{FACTOR_CORRECCION_MAX:.1f}. Es una corrección de primer orden; el mapeo de cuantiles "
@@ -2442,7 +2468,7 @@ def narrar_temporada_pdf(temporada):
 
 mostrar_logo(st.sidebar)
 st.sidebar.title("⚙️ Parámetros del Activo")
-st.sidebar.caption("Evaluación probabilística — Temporada ENFEN Oct 2026 – Abr 2027")
+st.sidebar.caption(f"Evaluación probabilística — Temporada ENFEN {RANGO_TEMPORADA}")
 
 lat_usuario = st.sidebar.number_input(
     "Latitud de la planta", min_value=-18.5, max_value=0.1,
@@ -2470,8 +2496,18 @@ area_aporte = st.sidebar.number_input(
          "uniforme sobre una cuenca completa.",
 )
 
+# Mes por defecto: el primero POSTERIOR al mes en curso, que es el primero con
+# pronóstico mensual completo. Así, al abrir la app a mitad de diciembre no se
+# aterriza en un mes "en curso" sin porcentaje. Si la temporada ya terminó, se
+# queda en el último mes.
+_hoy = datetime.now()
+_indice_defecto = next(
+    (i for i, (_, a, m) in enumerate(MESES_EVENTO) if (a, m) > (_hoy.year, _hoy.month)),
+    len(MESES_EVENTO) - 1,
+)
 etiqueta_mes = st.sidebar.selectbox(
-    "Mes de análisis (evento crítico ENFEN)", [m[0] for m in MESES_EVENTO]
+    "Mes de análisis (evento crítico ENFEN)", [m[0] for m in MESES_EVENTO],
+    index=_indice_defecto,
 )
 _, anio_sel, mes_sel = next(m for m in MESES_EVENTO if m[0] == etiqueta_mes)
 
@@ -2819,7 +2855,7 @@ with tab_prob:
         template="plotly_dark", paper_bgcolor=COLOR_FONDO, plot_bgcolor=COLOR_LIENZO,
         height=490, barmode="group",
         title=dict(
-            text="Temporada Oct 2026 – Abr 2027: clima de referencia, magnitud pronosticada y probabilidad",
+            text=f"Temporada {RANGO_TEMPORADA}: clima de referencia, magnitud pronosticada y probabilidad",
             x=0.02, xanchor="left", y=0.97, yanchor="top",
             font=dict(color="#FFFFFF", size=15),
         ),
