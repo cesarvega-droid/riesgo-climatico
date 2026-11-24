@@ -22,6 +22,9 @@
 #  Cambios nov-2026: ventana de observación corrida a dic 2026 – may 2027
 #  (octubre y noviembre ya transcurrieron), referencia Niño extendida a mayo
 #  (1998 y 2017), contexto ENFEN N°20-2026 y mes por defecto = primer mes futuro.
+#  Correcciones: (1) el dato MENSUAL de SEAS5 llegaba corrido un mes (normal del
+#  modelo, factor de corrección y señal desalineados); (2) un mes CRÍTICO fuera de
+#  la costa mostraba "Condición dentro de rangos de planificación".
 #
 #  Ejecución local:
 #    pip install streamlit geopandas shapely plotly requests pandas numpy fpdf2
@@ -398,30 +401,35 @@ VERSION_ESTADO = "Versión BETA 1.1 — herramienta en desarrollo"
 
 # Contexto oficial hardcodeado según especificación del proyecto.
 # NOTA DE MANTENIMIENTO: actualizar este bloque con cada nuevo comunicado ENFEN.
-#   Vigente: Comunicado N°20-2026 (13/11/2026). Próximo: 30/11/2026.
-#   Redactado desde la cobertura de prensa del comunicado (Gestión, Correo,
-#   14/11/2026); validar contra el PDF oficial del ENFEN.
+#   Vigente: Comunicado N°20-2026 (13/11/2026). Próximo: lunes 30/11/2026.
+#   Texto validado contra el PDF oficial del comunicado.
 TEXTO_ENFEN = (
     "<b>Contexto Oficial ENFEN (Comunicado N°20-2026, 13/11/2026):</b> "
-    "Alerta de El Niño Costero vigente. El Niño Costero (región Niño 1+2) se "
-    "mantendría con magnitud <b>extraordinaria</b> hasta febrero de 2027, "
-    "debilitándose progresivamente hasta julio de 2027; El Niño en la región "
-    "Niño 3.4 se mantendría <b>muy fuerte</b> hasta febrero de 2027. Para el "
-    "verano 2027 se prevén lluvias superiores a lo normal en toda la costa y en la "
-    "sierra norte y central occidental, con mayor frecuencia e intensidad en la "
-    "costa norte. Desde enero de 2027, los caudales sobre lo normal se extenderían "
-    "a los ríos Chillón, Rímac, Lurín, Pisco e Ica."
+    "Alerta de El Niño Costero vigente; continuaría hasta inicios del invierno de "
+    "2027. El Niño Costero (región Niño 1+2) se mantendría con magnitud "
+    "<b>extraordinaria</b> hasta febrero de 2027, debilitándose progresivamente "
+    "hasta julio; El Niño en la región Niño 3.4 seguiría <b>muy fuerte</b> hasta "
+    "febrero, con declive hacia condición neutra en junio de 2027. De noviembre "
+    "2026 a enero 2027 se prevén lluvias sobre lo normal en la costa norte, sierra "
+    "norte occidental, costa central y sierra central occidental (más episodios de "
+    "moderada a fuerte intensidad, en particular en la costa norte); en el verano "
+    "2027, en toda la costa y en la sierra norte y central occidental. Caudales "
+    "sobre lo normal en los ríos de la costa norte, extendiéndose desde enero de "
+    "2027 a los ríos Chillón, Rímac, Lurín, Pisco e Ica."
 )
 TEXTO_ENFEN_PDF = (
     "Contexto Oficial ENFEN (Comunicado N°20-2026, 13/11/2026): Alerta de El Niño "
-    "Costero vigente. El Niño Costero (región Niño 1+2) se mantendría con magnitud "
-    "extraordinaria hasta febrero de 2027, debilitándose progresivamente hasta julio "
-    "de 2027; El Niño en la región Niño 3.4 se mantendría muy fuerte hasta febrero de "
-    "2027. Para el verano 2027 se prevén lluvias superiores a lo normal en toda la "
-    "costa y en la sierra norte y central occidental, con mayor frecuencia e "
-    "intensidad en la costa norte. Desde enero de 2027, los caudales sobre lo normal "
-    "se extenderían a los ríos Chillón, Rímac, Lurín, Pisco e Ica. Próximo "
-    "comunicado oficial: 30/11/2026."
+    "Costero vigente; continuaría hasta inicios del invierno de 2027. El Niño Costero "
+    "(región Niño 1+2) se mantendría con magnitud extraordinaria hasta febrero de "
+    "2027, debilitándose progresivamente hasta julio; El Niño en la región Niño 3.4 "
+    "seguiría muy fuerte hasta febrero, con declive hacia condición neutra en junio de "
+    "2027. De noviembre 2026 a enero 2027 se prevén lluvias sobre lo normal en la costa "
+    "norte, sierra norte occidental, costa central y sierra central occidental (más "
+    "episodios de moderada a fuerte intensidad, en particular en la costa norte); en el "
+    "verano 2027, en toda la costa y en la sierra norte y central occidental. Caudales "
+    "sobre lo normal en los ríos de la costa norte, extendiéndose desde enero de 2027 a "
+    "los ríos Chillón, Rímac, Lurín, Pisco e Ica. Próximo comunicado oficial: lunes "
+    "30/11/2026."
 )
 
 
@@ -560,6 +568,23 @@ def _como_lista(respuesta_json):
     return respuesta_json if isinstance(respuesta_json, list) else [respuesta_json]
 
 
+def _mes_de_marca(tiempos) -> pd.DatetimeIndex:
+    """
+    Lleva cada marca de tiempo del dato MENSUAL de SEAS5 a mitad del mes que
+    representa, para leer año y mes sin ambigüedad.
+
+    Diagnóstico (nov-2026): pedido con timezone=auto, el dato mensual llegaba
+    corrido un mes hacia atrás. La "normal SEAS5 de diciembre" era en realidad
+    la de enero, mayo no aparecía y los factores de corrección salían extremos
+    en casi toda la temporada. La causa probable es que la marca de inicio de
+    mes (00:00 GMT) se convierte a la hora local de Lima (UTC-5) y cae el
+    último día del mes anterior a las 19:00. Las consultas mensuales se piden
+    ahora en GMT y, además, sumar medio mes hace la lectura inmune a cualquier
+    desfase de horas.
+    """
+    return pd.to_datetime(tiempos) + pd.Timedelta(days=15)
+
+
 @st.cache_data(show_spinner=False)
 def obtener_probabilidad_grilla(puntos: tuple, anio: int, mes: int) -> pd.DataFrame:
     """
@@ -616,7 +641,7 @@ def _indice_humedad_punto(loc_m, anio, mes):
     Devuelve None si el mes objetivo no está dentro del horizonte del modelo.
     """
     mensual = loc_m.get("monthly", {})
-    t = pd.to_datetime(mensual.get("time", []))
+    t = _mes_de_marca(mensual.get("time", []))
     clave_media = next((k for k in mensual if "precipitation_mean" in k), None)
     clave_anom = next((k for k in mensual if "precipitation_anomaly" in k), None)
     if not clave_media or not clave_anom or len(t) == 0:
@@ -1089,14 +1114,16 @@ def obtener_pronostico_seas5(lat: float, lon: float):
             "longitude": lon,
             "monthly": "precipitation_mean,precipitation_anomaly",
             "models": "ecmwf_seas5",
-            "timezone": "auto",
+            "timezone": "GMT",      # En GMT, como la grilla: con "auto" el dato
+                                    # mensual llegaba corrido un mes (ver
+                                    # _mes_de_marca).
             "forecast_days": 215,   # Igual que en la grilla: sin esto el dato
                                     # mensual se corta antes del final de la temporada.
         }
         r2 = requests.get(URL_API_ESTACIONAL, params=params_mensual, timeout=120)
         r2.raise_for_status()
         mensual = r2.json().get("monthly", {})
-        t = pd.to_datetime(mensual.get("time", []))
+        t = _mes_de_marca(mensual.get("time", []))
         clave_media = next((k for k in mensual if "precipitation_mean" in k), None)
         clave_anom = next((k for k in mensual if "precipitation_anomaly" in k), None)
         if clave_media and clave_anom:
@@ -1906,11 +1933,15 @@ def evaluar_consecuencias(dep_norm, sector, nivel, anomalia_mm_dia, texto_probab
     es_sierra_sur = dep_norm in SIERRA_SUR_ALTIPLANO
     seca = anomalia_mm_dia is not None and anomalia_mm_dia < 0
 
-    if es_costa and nivel == "CRÍTICA":
+    # Un mes CRÍTICO es, por definición, un mes en que la mayoría del ensamble
+    # supera el P90 de lluvia del propio punto: la consecuencia es de LLUVIA en
+    # cualquier región. Antes solo se atendía a la costa, y un punto de Arequipa
+    # (p. ej. la pampa de La Joya) en CRÍTICA caía en "Condición dentro de
+    # rangos de planificación", contradiciendo al semáforo (corrección nov-2026).
+    if nivel == "CRÍTICA":
         mensaje = _CONSECUENCIAS_LLUVIA_COSTA.get(sector, _CONSECUENCIA_LLUVIA_GENERICA)
-        return ("critico",
-                "Peligro Crítico — Lluvias Extremas (Costa Norte/Intermedia)",
-                mensaje)
+        region = "Costa Norte/Intermedia" if es_costa else "señal húmeda en el punto"
+        return ("critico", f"Peligro Crítico — Lluvias Extremas ({region})", mensaje)
 
     if es_sierra_sur and seca:
         mensaje = _CONSECUENCIAS_SEQUIA_SIERRA.get(sector, _CONSECUENCIA_SEQUIA_GENERICA)
@@ -1928,6 +1959,14 @@ def evaluar_consecuencias(dep_norm, sector, nivel, anomalia_mm_dia, texto_probab
                       "debajo del nivel crítico, pero la región permanece bajo alerta oficial "
                       "de El Niño Costero. ")
         return ("alto", "Vigilancia — Costa bajo Alerta ENFEN", cuerpo + recomendacion)
+
+    if nivel == "VIGILANCIA":
+        return ("alto", "Vigilancia — Señal húmeda del ensamble",
+                f"El semáforo del mes está en VIGILANCIA ({texto_probabilidad}): el ensamble "
+                "muestra una señal de lluvia por encima de lo habitual en el punto, aún por "
+                "debajo del nivel crítico. Mantener monitoreo mensual del ensamble SEAS5 "
+                "(actualización cada día 5) y revisar drenajes, cunetas y accesos antes de "
+                "los meses de mayor señal.")
 
     return ("normal", "Condición dentro de rangos de planificación",
             "La señal probabilística del ensamble para esta región y mes no supera "
